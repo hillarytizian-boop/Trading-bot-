@@ -1,40 +1,32 @@
-require('dotenv').config()
-const express = require('express')
-const cors = require('cors')
-const helmet = require('helmet')
-const rateLimit = require('express-rate-limit')
-
-const app = express()
-
-app.use(cors())
-app.use(helmet())
-app.use(express.json())
-
-app.use(rateLimit({
-  windowMs: 60 * 1000,
-  max: 120
-}))
-
-app.use('/api/auth', require('./routes/auth'))
-app.use('/api/bot', require('./routes/bot'))
-app.use('/api/ai', require('./routes/ai'))
-app.use('/api/dashboard', require('./routes/dashboard'))
-app.use('/api/profile', require('./routes/profile'))
-
-app.get('/', (req, res) => {
-  res.json({ status: 'Trading Bot Backend Running' })
-})
-
-const PORT = process.env.PORT || 5000
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-})
-
-/* ===== FRONTEND STATIC SERVE FIX ===== */
+const express = require("express");
 const path = require("path");
+const http = require("http");
+const cors = require("cors");
 
-app.use(express.static(path.join(__dirname, "public")));
+const app = express();
+const server = http.createServer(app);
 
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public/index.html"));
+app.use(cors());
+app.use(express.json());
+
+// health route
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// frontend path
+const frontendPath = path.join(__dirname, "public");
+
+// serve frontend
+app.use(express.static(frontendPath));
+
+// FIXED fallback route (no '*')
+app.get(/.*/, (req, res) => {
+  res.sendFile(path.join(frontendPath, "index.html"));
+});
+
+const PORT = process.env.PORT || 8000;
+
+server.listen(PORT, () => {
+  console.log("Server running on port", PORT);
 });
