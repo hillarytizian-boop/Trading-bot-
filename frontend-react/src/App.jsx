@@ -1,49 +1,56 @@
-import { useEffect, useState } from 'react'
-import { api } from './api'
+import { useEffect, useState } from "react"
+import { deriv } from "./deriv"
 
-export default function App() {
+function App() {
+  const [balance, setBalance] = useState(null)
   const [price, setPrice] = useState(null)
-  const [signal, setSignal] = useState(null)
-  const [confidence, setConfidence] = useState(0)
+  const [token, setToken] = useState("")
 
   useEffect(() => {
-    const ws = new WebSocket('wss://ws.deriv.com/websockets/v3?app_id=1089')
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ ticks: 'R_100', subscribe: 1 }))
-    }
-
-    ws.onmessage = (e) => {
-      const data = JSON.parse(e.data)
-      if (data.tick) setPrice(data.tick.quote)
-    }
-
-    return () => ws.close()
+    deriv.connect()
   }, [])
 
-  const analyze = async () => {
-    const res = await api().post('/ai/analyze', {
-      market: 'R_100',
-      price: price || 100
+  const connectAccount = () => {
+    deriv.setToken(token)
+    deriv.authorize(token)
+
+    deriv.getBalance((data) => {
+      setBalance(data.balance?.balance)
     })
 
-    setSignal(res.data.signal)
-    setConfidence(res.data.confidence)
+    deriv.subscribeTicks("R_100", (data) => {
+      setPrice(data.tick?.quote)
+    })
+  }
+
+  const tradeBuy = () => {
+    deriv.buy("CALL", 1, "R_100")
+  }
+
+  const tradeSell = () => {
+    deriv.buy("PUT", 1, "R_100")
   }
 
   return (
-    <div style={{padding:20}}>
-      <h2>Trading Terminal</h2>
-      <p>Price: {price}</p>
+    <div style={{ padding: 20, fontFamily: "monospace" }}>
+      <h1>DERIV LIVE TERMINAL</h1>
 
-      <button onClick={analyze}>Analyze</button>
+      <input
+        placeholder="Paste API Token"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        style={{ width: "100%", padding: 10 }}
+      />
 
-      {signal && (
-        <div>
-          <h3>Signal: {signal}</h3>
-          <p>Confidence: {confidence}%</p>
-        </div>
-      )}
+      <button onClick={connectAccount}>Connect</button>
+
+      <h2>Balance: {balance ?? "Not connected"}</h2>
+      <h2>Price: {price ?? "Waiting..."}</h2>
+
+      <button onClick={tradeBuy}>BUY</button>
+      <button onClick={tradeSell}>SELL</button>
     </div>
   )
 }
+
+export default App

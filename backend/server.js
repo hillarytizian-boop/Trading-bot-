@@ -2,6 +2,8 @@ const express = require("express");
 const path = require("path");
 const http = require("http");
 const cors = require("cors");
+const WebSocket = require("ws");
+const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
@@ -9,24 +11,53 @@ const server = http.createServer(app);
 app.use(cors());
 app.use(express.json());
 
-// health route
-app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
-});
-
-// frontend path
 const frontendPath = path.join(__dirname, "public");
-
-// serve frontend
 app.use(express.static(frontendPath));
 
-// FIXED fallback route (no '*')
 app.get(/.*/, (req, res) => {
   res.sendFile(path.join(frontendPath, "index.html"));
 });
 
-const PORT = process.env.PORT || 8000;
+const io = new Server(server, {
+  cors: { origin: "*" }
+});
 
-server.listen(PORT, () => {
-  console.log("Server running on port", PORT);
+let symbol = "R_100";
+
+const deriv = new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=1089");
+
+deriv.on("open", () => {
+  deriv.send(JSON.stringify({
+    ticks: symbol,
+    subscribe: 1
+  }));
+});
+
+deriv.on("message", (msg) => {
+  const data = JSON.parse(msg);
+
+  if (data.tick) {
+    io.emit("tick", {
+      symbol,
+      price: data.tick.quote,
+      time: data.tick.epoch
+    });
+  }
+});
+
+io.on("connection", (socket) => {
+  socket.on("change_symbol", (newSymbol) => {
+    symbol = newSymbol;
+
+    deriv.send(JSON.stringify({ forget_all: "ticks" }));
+
+    deriv.send(JSON.stringify({
+      ticks: symbol,
+      subscribe: 1
+    }));
+  });
+});
+
+server.listen(8000, () => {
+  console.log("Server running on port 8000");
 });

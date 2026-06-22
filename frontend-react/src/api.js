@@ -1,21 +1,22 @@
-import axios from 'axios'
+import axios from "axios"
 
-const API = '/api'
+const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000"
 
-export const getToken = () => localStorage.getItem('hila_token') || ''
-export const setToken = (t) => localStorage.setItem('hila_token', t)
-export const clearToken = () => {
-  localStorage.removeItem('hila_token')
-  window.location.reload()
+export const api = axios.create({
+  baseURL: BASE_URL,
+  headers: { "Content-Type": "application/json" }
+})
+
+// REAL BALANCE FETCH
+export const getBalance = async (token) => {
+  return await api.get("/balance", {
+    headers: { Authorization: `Bearer ${token}` }
+  })
 }
 
-export const api = () => {
-  const token = getToken()
-  return axios.create({
-    baseURL: API,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: token ? `Bearer ${token}` : ''
-    }
+// PLACE TRADE
+export const placeTrade = async (data, token) => {
+  return await api.post("/trade", data, {
+    headers: { Authorization: `Bearer ${token}` }
   })
 }
