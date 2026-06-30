@@ -61,3 +61,4 @@ io.on("connection", (socket) => {
 server.listen(8000, () => {
   console.log("Server running on port 8000");
 });
+app.use('/api/binance', require('./routes/binance'));
