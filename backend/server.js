@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const sequelize = require('./db');
 
-// Import routes (adjust paths if they exist)
 const authRoutes = require('./routes/auth');
 const binanceRoutes = require('./routes/binance');
 const aiRoutes = require('./routes/ai');
@@ -15,9 +14,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// API endpoints
 app.use('/api/auth', authRoutes);
 app.use('/api/binance', binanceRoutes);
 app.use('/api/ai', aiRoutes);
@@ -25,17 +22,12 @@ app.use('/api/bot', botRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/trades', tradeRoutes);
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
+app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
 // 404 fallback
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
-});
+app.use('*', (req, res) => res.status(404).json({ error: 'Route not found' }));
 
-// Sync database and start
+// Sync DB (create tables) then start
 sequelize.sync({ force: false })
   .then(() => {
     console.log('✅ Database synced (SQLite in-memory)');

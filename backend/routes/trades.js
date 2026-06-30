@@ -1,3 +1,3 @@
 const router = require('express').Router();
-router.get('/balance', (req, res) => res.json({ balance: 1000 }));
+router.get('/', (req, res) => res.json([]));
 module.exports = router;
