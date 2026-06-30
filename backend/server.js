@@ -25,13 +25,13 @@ app.use('/api/trades', tradeRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
-// Serve static frontend files (built from frontend-react/dist)
+// Serve static frontend files (from frontend-react/dist)
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
-// For any non-API routes, serve index.html (SPA routing)
-app.get('*', (req, res) => {
-  // If it's an API route and hasn't been matched, return 404 JSON
+// Catch-all for any other requests: serve index.html (for SPA routing)
+// but return 404 for API routes that weren't matched
+app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });
   }
