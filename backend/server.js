@@ -1,64 +1,51 @@
-const express = require("express");
-const path = require("path");
-const http = require("http");
-const cors = require("cors");
-const WebSocket = require("ws");
-const { Server } = require("socket.io");
+const express = require('express');
+const cors = require('cors');
+const path = require('path');
+const sequelize = require('./db');  // your SQLite in-memory DB
+
+// Import your route files (adjust paths if needed)
+const authRoutes = require('./routes/auth');
+const binanceRoutes = require('./routes/binance');
+const aiRoutes = require('./routes/ai');
+const botRoutes = require('./routes/bot');
+const adminRoutes = require('./routes/admin');
+const tradeRoutes = require('./routes/trades');
 
 const app = express();
-const server = http.createServer(app);
+const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-const frontendPath = path.join(__dirname, "public");
-app.use(express.static(frontendPath));
+// API routes
+app.use('/api/auth', authRoutes);
+app.use('/api/binance', binanceRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/bot', botRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/trades', tradeRoutes);
 
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(frontendPath, "index.html"));
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-const io = new Server(server, {
-  cors: { origin: "*" }
+// Catch-all for undefined routes (optional)
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Route not found' });
 });
 
-let symbol = "R_100";
-
-const deriv = new WebSocket("wss://ws.derivws.com/websockets/v3?app_id=1089");
-
-deriv.on("open", () => {
-  deriv.send(JSON.stringify({
-    ticks: symbol,
-    subscribe: 1
-  }));
-});
-
-deriv.on("message", (msg) => {
-  const data = JSON.parse(msg);
-
-  if (data.tick) {
-    io.emit("tick", {
-      symbol,
-      price: data.tick.quote,
-      time: data.tick.epoch
+// Sync database and start server
+sequelize.sync({ force: false })  // false = don't drop tables
+  .then(() => {
+    console.log('📦 Database synced (SQLite in-memory)');
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
     });
-  }
-});
-
-io.on("connection", (socket) => {
-  socket.on("change_symbol", (newSymbol) => {
-    symbol = newSymbol;
-
-    deriv.send(JSON.stringify({ forget_all: "ticks" }));
-
-    deriv.send(JSON.stringify({
-      ticks: symbol,
-      subscribe: 1
-    }));
+  })
+  .catch(err => {
+    console.error('❌ Database sync failed:', err);
+    process.exit(1);
   });
-});
-
-server.listen(8000, () => {
-  console.log("Server running on port 8000");
-});
-app.use('/api/binance', require('./routes/binance'));
