@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const sequelize = require('./db');
+const supabase = require('./db');
 
 const authRoutes = require('./routes/auth');
 const binanceRoutes = require('./routes/binance');
@@ -24,16 +24,10 @@ app.use('/api/trades', tradeRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
-// 404 fallback
-app.use('*', (req, res) => res.status(404).json({ error: 'Route not found' }));
+// 404 catch-all – using function (no path) to avoid path-to-regexp error
+app.use((req, res) => {
+  res.status(404).json({ error: 'Route not found' });
+});
 
-// Sync DB (create tables) then start
-sequelize.sync({ force: false })
-  .then(() => {
-    console.log('✅ Database synced (SQLite in-memory)');
-    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-  })
-  .catch(err => {
-    console.error('❌ DB sync failed:', err);
-    process.exit(1);
-  });
+// Start server (no database sync needed with Supabase)
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
