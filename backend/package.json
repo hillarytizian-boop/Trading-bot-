@@ -15,16 +15,19 @@
     "@supabase/supabase-js": "^2.110.0",
     "axios": "^1.18.0",
     "bcryptjs": "^3.0.3",
+    "binance-api-node": "^0.13.10",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
+    "openai": "^6.45.0",
     "pg": "^8.22.0",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.8",
     "socket.io": "^4.8.3",
+    "uuid": "^14.0.1",
     "ws": "^8.21.0"
   }
 }
