@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const supabase = require('./db');
+const path = require('path');
 
 const authRoutes = require('./routes/auth');
 const binanceRoutes = require('./routes/binance');
@@ -15,6 +15,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/binance', binanceRoutes);
 app.use('/api/ai', aiRoutes);
@@ -24,10 +25,17 @@ app.use('/api/trades', tradeRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
-// 404 catch-all – using function (no path) to avoid path-to-regexp error
-app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+// Serve static frontend files (built from frontend-react/dist)
+const distPath = path.join(__dirname, '../frontend-react/dist');
+app.use(express.static(distPath));
+
+// For any non-API routes, serve index.html (SPA routing)
+app.get('*', (req, res) => {
+  // If it's an API route and hasn't been matched, return 404 JSON
+  if (req.path.startsWith('/api')) {
+    return res.status(404).json({ error: 'API route not found' });
+  }
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
-// Start server (no database sync needed with Supabase)
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
