@@ -2,16 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
-// Import route modules – wrap each in try/catch to avoid crash if a file is missing
-let authRoutes, binanceRoutes, aiRoutes, botRoutes, adminRoutes, tradeRoutes, agentRoutes;
-
-try { authRoutes = require('./routes/auth'); } catch(e) { authRoutes = (req,res) => res.status(501).json({error:'Auth not implemented'}); }
-try { binanceRoutes = require('./routes/binance'); } catch(e) { binanceRoutes = (req,res) => res.status(501).json({error:'Binance not implemented'}); }
-try { aiRoutes = require('./routes/ai'); } catch(e) { aiRoutes = (req,res) => res.status(501).json({error:'AI not implemented'}); }
-try { botRoutes = require('./routes/bot'); } catch(e) { botRoutes = (req,res) => res.status(501).json({error:'Bot not implemented'}); }
-try { adminRoutes = require('./routes/admin'); } catch(e) { adminRoutes = (req,res) => res.status(501).json({error:'Admin not implemented'}); }
-try { tradeRoutes = require('./routes/trades'); } catch(e) { tradeRoutes = (req,res) => res.status(501).json({error:'Trades not implemented'}); }
-try { agentRoutes = require('./routes/agent'); } catch(e) { agentRoutes = (req,res) => res.status(501).json({error:'Agent not implemented'}); }
+// Require all route modules (they all exist now)
+const authRoutes = require('./routes/auth');
+const binanceRoutes = require('./routes/binance');
+const aiRoutes = require('./routes/ai');
+const botRoutes = require('./routes/bot');
+const adminRoutes = require('./routes/admin');
+const tradeRoutes = require('./routes/trades');
+const agentRoutes = require('./routes/agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,7 +17,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Mount routes – each is guaranteed to be a function (either the real router or a fallback)
+// Mount API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/binance', binanceRoutes);
 app.use('/api/ai', aiRoutes);
