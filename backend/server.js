@@ -8,6 +8,7 @@ const aiRoutes = require('./routes/ai');
 const botRoutes = require('./routes/bot');
 const adminRoutes = require('./routes/admin');
 const tradeRoutes = require('./routes/trades');
+const agentRoutes = require("./routes/agent");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/bot', botRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/trades', tradeRoutes);
+app.use("/api/agent", agentRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
