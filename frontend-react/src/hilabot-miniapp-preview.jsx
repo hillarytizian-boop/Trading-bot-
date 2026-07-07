@@ -200,7 +200,6 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
         .then(data => {
           if (data.connected) {
             setStatus('connected');
-            // fetch balance
             fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`)
               .then(r => r.json())
               .then(bal => {
@@ -369,38 +368,76 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
 
 /* ───────────────────────── SIGNALS (main chat-thread screen) ───────────────────────── */
 function SignalsScreen({ binance, onOpenSettings }) {
-  const [messages, setMessages] = useState([
-    { type: "bot", time: "14:48", text: "Good morning! Bot started and scanning 3 markets." },
-    { type: "bot", time: "14:49", text: "Analysis complete on BTC/USDT.", signal: { signal: "BUY", confidence: 92, risk: "LOW" }, reason: "Bullish divergence on RSI with EMA9/21 crossover. MACD turning positive." },
-    { type: "user", time: "14:50", text: "Go ahead and place the trade." },
-    { type: "bot", time: "14:50", text: "✅ Trade executed — BUY BTC/USDT at 1.0821, $10 stake, SL 5% / TP 10%." },
-    { type: "bot", time: "15:03", text: "🎯 Trade closed — BTC/USDT WIN +$42.50 (exit 1.0843)." },
-  ]);
+  const [messages, setMessages] = useState([]);
+  const [price, setPrice] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const scrollRef = useRef(null);
+  const wsRef = useRef(null);
+
+  // Connect to Binance WebSocket for real-time price
+  useEffect(() => {
+    wsRef.current = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
+    wsRef.current.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.p) {
+        setPrice(parseFloat(data.p));
+      }
+    };
+    return () => wsRef.current?.close();
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, analyzing]);
+  }, [messages]);
 
-  const runAnalysis = () => {
+  const runAnalysis = async () => {
+    if (!price) {
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price data...' }]);
+      return;
+    }
     setAnalyzing(true);
-    setTimeout(() => {
-      const sigs = ["BUY", "SELL", "HOLD"];
-      const risks = ["LOW", "MEDIUM", "HIGH"];
-      const reasons = [
-        "RSI recovering from oversold. EMA9 crossing above EMA21. Momentum building.",
-        "RSI overbought at 74. Bearish MACD crossover detected. Reversal likely.",
-        "Tight consolidation range. Volume declining. No clear directional edge.",
-        "Golden cross confirmed on EMA50. Strong volume backing the breakout.",
-      ];
-      const signal = sigs[Math.floor(Math.random() * 3)];
-      const confidence = Math.floor(74 + Math.random() * 22);
-      const risk = risks[Math.floor(Math.random() * 3)];
-      const reason = reasons[Math.floor(Math.random() * reasons.length)];
-      setMessages((m) => [...m, { type: "bot", time: "now", text: "Fresh analysis on BTC/USDT.", signal: { signal, confidence, risk }, reason }]);
-      setAnalyzing(false);
-    }, 1300);
+    try {
+      const res = await fetch('/api/ai/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ market: 'BTC/USDT', price, indicators: { rsi: 50, ema: 0, macd: 0 } }),
+      });
+      const data = await res.json();
+      setMessages(prev => [...prev, {
+        type: 'bot',
+        time: new Date().toLocaleTimeString(),
+        text: 'Analysis result:',
+        signal: data,
+        reason: data.reason,
+      }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Analysis failed.' }]);
+    }
+    setAnalyzing(false);
+  };
+
+  const startAgent = async () => {
+    try {
+      const res = await fetch('/api/agent/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: CURRENT_USER.email }),
+      });
+      const data = await res.json();
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]);
+    }
+  };
+
+  const stopAgent = async () => {
+    try {
+      const res = await fetch('/api/agent/stop', { method: 'POST' });
+      const data = await res.json();
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
+    } catch (err) {
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]);
+    }
   };
 
   return (
@@ -452,8 +489,8 @@ function SignalsScreen({ binance, onOpenSettings }) {
       {/* Action bar */}
       <div style={{ padding: "10px 12px", borderTop: `1px solid ${DARK_BORDER}`, background: DARK_PANEL, display: "flex", gap: 8, overflowX: "auto" }}>
         <button onClick={runAnalysis} style={pill(TG_BLUE)}>🧠 Analyze</button>
-        <button style={pill(GREEN)}>▶ Start</button>
-        <button style={pill(GOLD)}>⏸ Pause</button>
+        <button onClick={startAgent} style={pill(GREEN)}>▶ Start</button>
+        <button onClick={stopAgent} style={pill(GOLD)}>⏸ Pause</button>
         <button style={pill(RED)}>⏹ Stop</button>
       </div>
     </div>
@@ -474,14 +511,19 @@ function StatChip({ label, value, color, dot }) {
 
 /* ───────────────────────── TRADES (active positions) ───────────────────────── */
 function TradesScreen() {
-  const active = [
-    { pair: "BTC/USDT", type: "BUY", entry: "1.0818", current: "1.0831", pnl: 13.2, conf: 95 },
-    { pair: "ETH/USDT", type: "SELL", entry: "2,341.50", current: "2,338.10", pnl: 8.4, conf: 81 },
-  ];
+  const [activeTrades, setActiveTrades] = useState([]);
+  useEffect(() => {
+    // In a real app, fetch from /api/trades/active
+    // For now, show placeholder
+    setActiveTrades([
+      { pair: "BTC/USDT", type: "BUY", entry: "1.0818", current: "1.0831", pnl: 13.2, conf: 95 },
+      { pair: "ETH/USDT", type: "SELL", entry: "2,341.50", current: "2,338.10", pnl: 8.4, conf: 81 },
+    ]);
+  }, []);
   return (
     <div style={{ flex: 1, overflowY: "auto", background: DARK_BG, padding: "14px" }}>
-      <p style={{ fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 10 }}>ACTIVE TRADES ({active.length})</p>
-      {active.map((t, i) => (
+      <p style={{ fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 10 }}>ACTIVE TRADES ({activeTrades.length})</p>
+      {activeTrades.map((t, i) => (
         <div key={i} style={{ background: DARK_PANEL, borderRadius: 16, padding: 16, marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <span style={{ fontWeight: 700, fontSize: 15 }}>{t.pair}</span>
@@ -511,16 +553,20 @@ function TradesScreen() {
 
 /* ───────────────────────── HISTORY ───────────────────────── */
 function HistoryScreen() {
-  const trades = Array.from({ length: 10 }, (_, i) => ({
-    id: 10 - i,
-    pair: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"][i % 5],
-    type: i % 3 === 0 ? "SELL" : "BUY",
-    pnl: i % 4 === 2 ? -(Math.random() * 30 + 5).toFixed(2) : (Math.random() * 60 + 5).toFixed(2),
-    conf: Math.floor(72 + Math.random() * 25),
-    time: `${13 - i}:0${i}`,
-    result: i % 4 === 2 ? "LOSS" : "WIN",
-  }));
-
+  const [history, setHistory] = useState([]);
+  useEffect(() => {
+    // In a real app, fetch from /api/trades
+    const mock = Array.from({ length: 10 }, (_, i) => ({
+      id: 10 - i,
+      pair: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"][i % 5],
+      type: i % 3 === 0 ? "SELL" : "BUY",
+      pnl: i % 4 === 2 ? -(Math.random() * 30 + 5).toFixed(2) : (Math.random() * 60 + 5).toFixed(2),
+      conf: Math.floor(72 + Math.random() * 25),
+      time: `${13 - i}:0${i}`,
+      result: i % 4 === 2 ? "LOSS" : "WIN",
+    }));
+    setHistory(mock);
+  }, []);
   return (
     <div style={{ flex: 1, overflowY: "auto", background: DARK_BG }}>
       <div style={{ display: "flex", gap: 10, padding: "14px", overflowX: "auto" }}>
@@ -529,7 +575,7 @@ function HistoryScreen() {
         <StatChip label="Total P&L" value="+$842.50" color={GOLD} />
       </div>
       <div style={{ padding: "0 14px 14px" }}>
-        {trades.map((t) => (
+        {history.map((t) => (
           <BotBubble key={t.id} time={t.time}>
             <strong>{t.type}</strong> {t.pair} — {t.result === "WIN" ? "🟢" : "🔴"} {t.result}
             <SignalChip signal={t.type} confidence={t.conf} risk={t.result === "WIN" ? "LOW" : "HIGH"} />
@@ -669,7 +715,6 @@ export default function HilaBotMiniApp() {
         .then(data => {
           if (data.connected) {
             setBinance(prev => ({ ...prev, connected: true }));
-            // fetch balance
             fetch(`/api/binance/balance?email=${encodeURIComponent(email)}`)
               .then(r => r.json())
               .then(bal => {
@@ -683,7 +728,6 @@ export default function HilaBotMiniApp() {
 
   // Callback when Binance is connected from settings
   const handleBinanceConnect = async (email) => {
-    // Refresh status and balance
     const statusRes = await fetch(`/api/binance/status?email=${encodeURIComponent(email)}`);
     const statusData = await statusRes.json();
     if (statusData.connected) {
