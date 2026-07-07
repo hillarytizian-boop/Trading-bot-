@@ -2,13 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
+// Import all route modules
 const authRoutes = require('./routes/auth');
 const binanceRoutes = require('./routes/binance');
 const aiRoutes = require('./routes/ai');
 const botRoutes = require('./routes/bot');
 const adminRoutes = require('./routes/admin');
 const tradeRoutes = require('./routes/trades');
-const agentRoutes = require("./routes/agent");
+const agentRoutes = require('./routes/agent');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,14 +17,14 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// API routes
+// Mount API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/binance', binanceRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/bot', botRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/trades', tradeRoutes);
-app.use("/api/agent", agentRoutes);
+app.use('/api/agent', agentRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
@@ -31,8 +32,7 @@ app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
-// Catch-all for any other requests: serve index.html (for SPA routing)
-// but return 404 for API routes that weren't matched
+// Catch-all for SPA – return index.html for non‑API routes
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });

@@ -53,16 +53,13 @@ async function agentLoop(email) {
     const ticker = await client.prices({ symbol: 'BTCUSDT' });
     const price = parseFloat(ticker.BTCUSDT);
 
-    // Simple indicators (mock – you can replace with real ones)
     const indicators = { rsi: 55, ema: price * 0.99, macd: 0.01 };
 
-    // Call the AI analysis function directly
     const signal = await analyze({ market: 'BTCUSDT', price, indicators });
     agentState.lastSignal = signal;
 
     if (signal.signal !== 'HOLD' && signal.confidence > 70) {
       const settings = await getSettings(email);
-      const maxDailyLoss = settings?.maxDailyLoss || 10;
       const maxTrades = settings?.maxTradesPerDay || 30;
 
       if (agentState.tradesToday >= maxTrades) {
