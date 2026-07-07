@@ -373,8 +373,8 @@ function SignalsScreen({ binance, onOpenSettings }) {
       <div style={{ display: "flex", gap: 8, padding: "10px 14px", overflowX: "auto" }}>
         <StatChip label="Bot" value="Active" color={GREEN} dot />
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
-        <StatChip label="Win rate" value="78.4%" color={TEXT} />
-        <StatChip label="Today" value="+$124.00" color={GOLD} />
+        <StatChip label="Win rate" value={binance.connected ? "Calculating..." : "—"} color={TEXT} />
+        <StatChip label="Today" value={binance.connected ? "—" : "—"} color={GOLD} />
       </div>
 
       {/* Live Price + Chart */}
