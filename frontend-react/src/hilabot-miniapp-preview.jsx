@@ -149,7 +149,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [localEmail, setLocalEmail] = useState(email || '');
-  const [status, setStatus] = useState('idle'); // idle | connecting | connected | error
+  const [status, setStatus] = useState('idle');
   const [balance, setBalance] = useState('0.00');
   const [riskLevel, setRiskLevel] = useState("MEDIUM");
   const [maxDailyLoss, setMaxDailyLoss] = useState(100);
@@ -158,7 +158,6 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   const [notifications, setNotifications] = useState(true);
   const [autoStop, setAutoStop] = useState(true);
 
-  // If the parent provides binance connection, use it; otherwise derive from binance.connected
   const isConnected = binance?.connected || false;
   const displayBalance = binance?.balance || '0.00';
 
@@ -177,8 +176,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
       const data = await res.json();
       if (res.ok) {
         setStatus('connected');
-        onBinanceConnect(localEmail); // notify parent to refresh status
-        // Also fetch balance
+        onBinanceConnect(localEmail);
         const balRes = await fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`);
         const balData = await balRes.json();
         if (balRes.ok) setBalance(balData.balance || '0.00');
@@ -192,7 +190,6 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
     }
   };
 
-  // When the drawer opens, check if already connected and fetch balance
   useEffect(() => {
     if (open && localEmail) {
       fetch(`/api/binance/status?email=${encodeURIComponent(localEmail)}`)
@@ -213,50 +210,16 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
 
   return (
     <>
-      {/* Backdrop */}
-      <div
-        onClick={onClose}
-        style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.55)",
-          opacity: open ? 1 : 0,
-          pointerEvents: open ? "auto" : "none",
-          transition: "opacity 0.25s",
-          zIndex: 200,
-        }}
-      />
-      {/* Drawer sheet */}
-      <div
-        style={{
-          position: "fixed",
-          left: 0,
-          right: 0,
-          bottom: 0,
-          maxHeight: "88vh",
-          background: DARK_BG,
-          borderRadius: "20px 20px 0 0",
-          transform: open ? "translateY(0)" : "translateY(100%)",
-          transition: "transform 0.3s cubic-bezier(.2,.8,.2,1)",
-          zIndex: 201,
-          display: "flex",
-          flexDirection: "column",
-          boxShadow: "0 -10px 40px rgba(0,0,0,0.5)",
-        }}
-      >
-        {/* Grab handle */}
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none", transition: "opacity 0.25s", zIndex: 200 }} />
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, maxHeight: "88vh", background: DARK_BG, borderRadius: "20px 20px 0 0", transform: open ? "translateY(0)" : "translateY(100%)", transition: "transform 0.3s cubic-bezier(.2,.8,.2,1)", zIndex: 201, display: "flex", flexDirection: "column", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
         <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 4px" }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.18)" }} />
         </div>
-
-        {/* Sheet header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 16px 12px", borderBottom: `1px solid ${DARK_BORDER}` }}>
           <span style={{ fontWeight: 700, fontSize: 16 }}>Settings</span>
           <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "none", color: TEXT, width: 30, height: 30, borderRadius: "50%", fontSize: 15, cursor: "pointer" }}>✕</button>
         </div>
-
         <div style={{ overflowY: "auto", flex: 1, paddingBottom: 24 }}>
-          {/* Binance Account */}
           <p style={{ padding: "14px 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>BINANCE ACCOUNT</p>
           <div style={{ background: DARK_PANEL, margin: "0 14px 18px", borderRadius: 14, overflow: "hidden" }}>
             {isConnected ? (
@@ -268,97 +231,40 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
             ) : (
               <div style={{ padding: 16, textAlign: "center" }}>
                 <p style={{ fontSize: 13, color: MUTED, marginBottom: 12 }}>Enter your Binance API credentials.</p>
-                <input
-                  type="email"
-                  placeholder="Email (for identification)"
-                  value={localEmail}
-                  onChange={e => setLocalEmail(e.target.value)}
-                  style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }}
-                />
-                <input
-                  type="text"
-                  placeholder="API Key"
-                  value={apiKey}
-                  onChange={e => setApiKey(e.target.value)}
-                  style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }}
-                />
-                <input
-                  type="password"
-                  placeholder="Secret Key"
-                  value={apiSecret}
-                  onChange={e => setApiSecret(e.target.value)}
-                  style={{ width: "100%", marginBottom: 12, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }}
-                />
-                <button
-                  onClick={saveBinanceKeys}
-                  disabled={status === 'connecting'}
-                  style={{ ...pill(TG_BLUE), width: "100%", padding: "11px 0", opacity: status === 'connecting' ? 0.6 : 1 }}
-                >
-                  {status === 'connecting' ? 'Connecting...' : '🔗 Connect to Binance'}
-                </button>
+                <input type="email" placeholder="Email" value={localEmail} onChange={e => setLocalEmail(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }} />
+                <input type="text" placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }} />
+                <input type="password" placeholder="Secret Key" value={apiSecret} onChange={e => setApiSecret(e.target.value)} style={{ width: "100%", marginBottom: 12, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }} />
+                <button onClick={saveBinanceKeys} disabled={status === 'connecting'} style={{ ...pill(TG_BLUE), width: "100%", padding: "11px 0", opacity: status === 'connecting' ? 0.6 : 1 }}>{status === 'connecting' ? 'Connecting...' : '🔗 Connect to Binance'}</button>
               </div>
             )}
           </div>
-
-          {/* Risk level */}
           <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>RISK LEVEL</p>
           <div style={{ display: "flex", gap: 8, padding: "0 14px", marginBottom: 18 }}>
             {["LOW", "MEDIUM", "HIGH"].map((r) => (
-              <div
-                key={r}
-                onClick={() => setRiskLevel(r)}
-                style={{
-                  flex: 1,
-                  textAlign: "center",
-                  padding: "10px 0",
-                  borderRadius: 14,
-                  fontSize: 12.5,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  background: riskLevel === r ? `${TG_BLUE}22` : DARK_PANEL,
-                  border: riskLevel === r ? `1px solid ${TG_BLUE}` : `1px solid ${DARK_BORDER}`,
-                  color: riskLevel === r ? TG_BLUE : MUTED,
-                }}
-              >
-                {r === "LOW" ? "🟢" : r === "MEDIUM" ? "🟡" : "🔴"} {r}
-              </div>
+              <div key={r} onClick={() => setRiskLevel(r)} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: riskLevel === r ? `${TG_BLUE}22` : DARK_PANEL, border: riskLevel === r ? `1px solid ${TG_BLUE}` : `1px solid ${DARK_BORDER}`, color: riskLevel === r ? TG_BLUE : MUTED }}>{r === "LOW" ? "🟢" : r === "MEDIUM" ? "🟡" : "🔴"} {r}</div>
             ))}
           </div>
-
-          {/* Trade limits */}
           <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>TRADE LIMITS</p>
           <div style={{ background: DARK_PANEL, margin: "0 14px 18px", borderRadius: 14, padding: "4px 0" }}>
             <div style={{ padding: "12px 16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 13.5 }}>Max daily loss</span>
-                <span style={{ fontFamily: "monospace", fontWeight: 700, color: RED }}>${maxDailyLoss}</span>
-              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 13.5 }}>Max daily loss</span><span style={{ fontFamily: "monospace", fontWeight: 700, color: RED }}>${maxDailyLoss}</span></div>
               <input type="range" min={20} max={500} step={10} value={maxDailyLoss} onChange={(e) => setMaxDailyLoss(+e.target.value)} style={{ width: "100%", accentColor: RED }} />
             </div>
             <div style={{ height: 1, background: DARK_BORDER }} />
             <div style={{ padding: "12px 16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontSize: 13.5 }}>Max trades per day</span>
-                <span style={{ fontFamily: "monospace", fontWeight: 700, color: TG_BLUE }}>{maxTrades}</span>
-              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 13.5 }}>Max trades per day</span><span style={{ fontFamily: "monospace", fontWeight: 700, color: TG_BLUE }}>{maxTrades}</span></div>
               <input type="range" min={5} max={200} step={5} value={maxTrades} onChange={(e) => setMaxTrades(+e.target.value)} style={{ width: "100%", accentColor: TG_BLUE }} />
             </div>
           </div>
-
-          {/* Automation toggles */}
           <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>AUTOMATION</p>
           <div style={{ background: DARK_PANEL, margin: "0 14px 18px", borderRadius: 14, overflow: "hidden" }}>
-            <TgListRow icon="🔄" label="Auto-compounding" sub="Reinvest profits automatically" right={<TgSwitch checked={autoCompound} onChange={setAutoCompound} />} />
-            <TgListRow icon="🔔" label="Trade notifications" sub="Alert on every trade" right={<TgSwitch checked={notifications} onChange={setNotifications} />} />
-            <TgListRow icon="🛑" label="Auto stop loss" sub="Halt bot at daily loss limit" right={<TgSwitch checked={autoStop} onChange={setAutoStop} />} last />
+            <TgListRow icon="🔄" label="Auto-compounding" sub="Reinvest profits" right={<TgSwitch checked={autoCompound} onChange={setAutoCompound} />} />
+            <TgListRow icon="🔔" label="Trade notifications" sub="Alert on trade" right={<TgSwitch checked={notifications} onChange={setNotifications} />} />
+            <TgListRow icon="🛑" label="Auto stop loss" sub="Halt at daily loss" right={<TgSwitch checked={autoStop} onChange={setAutoStop} />} last />
           </div>
-
-          {/* Markets */}
           <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>MARKET SELECTION</p>
           <div style={{ background: DARK_PANEL, margin: "0 14px 8px", borderRadius: 14, padding: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"].map((m, i) => (
-              <MarketTag key={m} label={m} defaultSelected={i < 3} />
-            ))}
+            {["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"].map((m, i) => (<MarketTag key={m} label={m} defaultSelected={i < 3} />))}
           </div>
         </div>
       </div>
@@ -366,10 +272,11 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   );
 }
 
-/* ───────────────────────── SIGNALS (main chat-thread screen) ───────────────────────── */
+/* ───────────────────────── SIGNALS with chart ───────────────────────── */
 function SignalsScreen({ binance, onOpenSettings }) {
   const [messages, setMessages] = useState([]);
   const [price, setPrice] = useState(null);
+  const [priceHistory, setPriceHistory] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
@@ -380,7 +287,12 @@ function SignalsScreen({ binance, onOpenSettings }) {
     wsRef.current.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.p) {
-        setPrice(parseFloat(data.p));
+        const newPrice = parseFloat(data.p);
+        setPrice(newPrice);
+        setPriceHistory(prev => {
+          const updated = [...prev, newPrice];
+          return updated.slice(-50); // keep last 50 prices
+        });
       }
     };
     return () => wsRef.current?.close();
@@ -407,7 +319,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: 'Analysis result:',
-        signal: data,
+        signal: data, // data has signal, confidence, reason
         reason: data.reason,
       }]);
     } catch (err) {
@@ -440,6 +352,21 @@ function SignalsScreen({ binance, onOpenSettings }) {
     }
   };
 
+  // Build SVG chart
+  const chartWidth = 300;
+  const chartHeight = 80;
+  const padding = 10;
+  const dataPoints = priceHistory.length > 0 ? priceHistory : [0];
+  const minPrice = Math.min(...dataPoints) * 0.999;
+  const maxPrice = Math.max(...dataPoints) * 1.001;
+  const range = maxPrice - minPrice || 1;
+  const points = dataPoints.map((p, i) => ({
+    x: padding + (i / (dataPoints.length - 1 || 1)) * (chartWidth - 2 * padding),
+    y: chartHeight - padding - ((p - minPrice) / range) * (chartHeight - 2 * padding),
+  }));
+  const linePath = points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ');
+  const areaPath = points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ') + ` L${points[points.length-1].x},${chartHeight - padding} L${points[0].x},${chartHeight - padding} Z`;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: DARK_BG, backgroundImage: "radial-gradient(circle at 30% 0%, rgba(42,171,238,0.06), transparent 45%)" }}>
       {/* Status strip */}
@@ -448,6 +375,27 @@ function SignalsScreen({ binance, onOpenSettings }) {
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
         <StatChip label="Win rate" value="78.4%" color={TEXT} />
         <StatChip label="Today" value="+$124.00" color={GOLD} />
+      </div>
+
+      {/* Live Price + Chart */}
+      <div style={{ margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, border: `1px solid ${DARK_BORDER}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <span style={{ fontSize: 12, color: MUTED }}>BTC/USDT</span>
+          <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace" }}>{price ? `$${price.toFixed(2)}` : 'Loading...'}</span>
+        </div>
+        <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: '100%', height: chartHeight }}>
+          <defs>
+            <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={TG_BLUE} stopOpacity="0.3"/>
+              <stop offset="100%" stopColor={TG_BLUE} stopOpacity="0"/>
+            </linearGradient>
+          </defs>
+          <path d={areaPath} fill="url(#areaGradient)" />
+          <path d={linePath} stroke={TG_BLUE} strokeWidth="2" fill="none" />
+          {points.map((p, i) => (
+            <circle key={i} cx={p.x} cy={p.y} r="2" fill={TG_BLUE} />
+          ))}
+        </svg>
       </div>
 
       {!binance.connected && (
@@ -468,7 +416,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
               {m.text}
               {m.signal && (
                 <>
-                  <SignalChip {...m.signal} />
+                  <SignalChip signal={m.signal.signal} confidence={m.signal.confidence} risk={m.signal.risk} />
                   <p style={{ fontSize: 12.5, color: "#9fb3c0", marginTop: 8, fontStyle: "italic" }}>"{m.reason}"</p>
                 </>
               )}
@@ -513,8 +461,6 @@ function StatChip({ label, value, color, dot }) {
 function TradesScreen() {
   const [activeTrades, setActiveTrades] = useState([]);
   useEffect(() => {
-    // In a real app, fetch from /api/trades/active
-    // For now, show placeholder
     setActiveTrades([
       { pair: "BTC/USDT", type: "BUY", entry: "1.0818", current: "1.0831", pnl: 13.2, conf: 95 },
       { pair: "ETH/USDT", type: "SELL", entry: "2,341.50", current: "2,338.10", pnl: 8.4, conf: 81 },
@@ -530,18 +476,9 @@ function TradesScreen() {
             <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 14, color: t.type === "BUY" ? GREEN : RED, background: t.type === "BUY" ? "rgba(79,206,93,0.15)" : "rgba(255,94,94,0.15)" }}>{t.type}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 10 }}>
-            <div>
-              <p style={{ color: MUTED, fontSize: 11 }}>Entry</p>
-              <p style={{ fontFamily: "monospace" }}>{t.entry}</p>
-            </div>
-            <div>
-              <p style={{ color: MUTED, fontSize: 11 }}>Current</p>
-              <p style={{ fontFamily: "monospace" }}>{t.current}</p>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <p style={{ color: MUTED, fontSize: 11 }}>P&L</p>
-              <p style={{ fontFamily: "monospace", fontWeight: 700, color: GREEN }}>+${t.pnl}</p>
-            </div>
+            <div><p style={{ color: MUTED, fontSize: 11 }}>Entry</p><p style={{ fontFamily: "monospace" }}>{t.entry}</p></div>
+            <div><p style={{ color: MUTED, fontSize: 11 }}>Current</p><p style={{ fontFamily: "monospace" }}>{t.current}</p></div>
+            <div style={{ textAlign: "right" }}><p style={{ color: MUTED, fontSize: 11 }}>P&L</p><p style={{ fontFamily: "monospace", fontWeight: 700, color: GREEN }}>+${t.pnl}</p></div>
           </div>
           <SignalChip signal={t.type} confidence={t.conf} risk="LOW" />
         </div>
@@ -555,7 +492,6 @@ function TradesScreen() {
 function HistoryScreen() {
   const [history, setHistory] = useState([]);
   useEffect(() => {
-    // In a real app, fetch from /api/trades
     const mock = Array.from({ length: 10 }, (_, i) => ({
       id: 10 - i,
       pair: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT"][i % 5],
@@ -594,34 +530,20 @@ function ProfileScreen({ user, binance, onOpenSettings }) {
   return (
     <div style={{ flex: 1, overflowY: "auto", background: DARK_BG, padding: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}>
-        <div style={{ width: 60, height: 60, borderRadius: "50%", background: `linear-gradient(135deg,${TG_BLUE},${TG_BLUE_DEEP})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: "#fff" }}>
-          {user.name[0]}
-        </div>
-        <div>
-          <p style={{ fontSize: 17, fontWeight: 700 }}>{user.name}</p>
-          <p style={{ fontSize: 12.5, color: MUTED }}>{user.role === "admin" ? "Administrator" : "Trader"} · Pro Plan</p>
-        </div>
+        <div style={{ width: 60, height: 60, borderRadius: "50%", background: `linear-gradient(135deg,${TG_BLUE},${TG_BLUE_DEEP})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: "#fff" }}>{user.name[0]}</div>
+        <div><p style={{ fontSize: 17, fontWeight: 700 }}>{user.name}</p><p style={{ fontSize: 12.5, color: MUTED }}>{user.role === "admin" ? "Administrator" : "Trader"} · Pro Plan</p></div>
       </div>
-
       <p style={{ fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 8 }}>ACCOUNT</p>
       <div style={{ background: DARK_PANEL, borderRadius: 14, overflow: "hidden", marginBottom: 18 }}>
         <TgListRow icon="🔗" label="Binance account" sub={binance.connected ? "Connected" : "Not connected"} right={<Chevron />} onClick={onOpenSettings} />
         <TgListRow icon="💳" label="Billing & subscription" sub="Pro · $79/mo" right={<Chevron />} />
         <TgListRow icon="🔒" label="Security" sub="Password, 2FA" right={<Chevron />} last />
       </div>
-
       <p style={{ fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em", marginBottom: 8 }}>STATS</p>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
-        <div style={{ background: DARK_PANEL, borderRadius: 14, padding: 14 }}>
-          <p style={{ fontSize: 11, color: MUTED }}>Total trades</p>
-          <p style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace" }}>247</p>
-        </div>
-        <div style={{ background: DARK_PANEL, borderRadius: 14, padding: 14 }}>
-          <p style={{ fontSize: 11, color: MUTED }}>Win rate</p>
-          <p style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace", color: GREEN }}>78.5%</p>
-        </div>
+        <div style={{ background: DARK_PANEL, borderRadius: 14, padding: 14 }}><p style={{ fontSize: 11, color: MUTED }}>Total trades</p><p style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace" }}>247</p></div>
+        <div style={{ background: DARK_PANEL, borderRadius: 14, padding: 14 }}><p style={{ fontSize: 11, color: MUTED }}>Win rate</p><p style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace", color: GREEN }}>78.5%</p></div>
       </div>
-
       <button onClick={onOpenSettings} style={{ ...pill(TG_BLUE), width: "100%", padding: "12px 0", marginBottom: 10 }}>⚙️ Open Settings</button>
       <button style={{ ...pill(RED), width: "100%", padding: "12px 0" }}>🚪 Sign Out</button>
     </div>
@@ -649,10 +571,7 @@ function AdminScreen() {
         <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderBottom: `1px solid ${DARK_BORDER}` }}>
           <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg,#3a4a5c,#222e3a)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700 }}>{u.name[0]}</div>
           <div style={{ flex: 1 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 13.5, fontWeight: 600 }}>{u.name}</span>
-              <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 9, background: "rgba(240,180,41,0.15)", color: GOLD, textTransform: "uppercase" }}>{u.plan}</span>
-            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ fontSize: 13.5, fontWeight: 600 }}>{u.name}</span><span style={{ fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 9, background: "rgba(240,180,41,0.15)", color: GOLD, textTransform: "uppercase" }}>{u.plan}</span></div>
             <p style={{ fontSize: 11.5, color: u.status === "active" ? GREEN : MUTED }}>{u.status === "active" ? "● online" : "○ offline"}</p>
           </div>
           <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 12.5, color: parseFloat(u.pnl) >= 0 ? GREEN : RED }}>{parseFloat(u.pnl) >= 0 ? "+" : "-"}${Math.abs(u.pnl)}</span>
@@ -675,22 +594,7 @@ function BottomNav({ tab, setTab, isAdmin }) {
   return (
     <div style={{ display: "flex", background: DARK_PANEL, borderTop: `1px solid ${DARK_BORDER}`, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }}>
       {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => setTab(t.id)}
-          style={{
-            flex: 1,
-            background: "none",
-            border: "none",
-            padding: "8px 0 6px",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 2,
-            cursor: "pointer",
-            color: tab === t.id ? TG_BLUE : MUTED,
-          }}
-        >
+        <button key={t.id} onClick={() => setTab(t.id)} style={{ flex: 1, background: "none", border: "none", padding: "8px 0 6px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer", color: tab === t.id ? TG_BLUE : MUTED }}>
           <span style={{ fontSize: 19, lineHeight: 1 }}>{t.icon}</span>
           <span style={{ fontSize: 10.5, fontWeight: tab === t.id ? 700 : 500 }}>{t.label}</span>
         </button>
@@ -706,7 +610,6 @@ export default function HilaBotMiniApp() {
   const [binance, setBinance] = useState({ connected: false, balance: "0.00" });
   const isAdmin = CURRENT_USER.role === "admin";
 
-  // Check initial connection status on mount
   useEffect(() => {
     const email = CURRENT_USER.email;
     if (email) {
@@ -726,7 +629,6 @@ export default function HilaBotMiniApp() {
     }
   }, []);
 
-  // Callback when Binance is connected from settings
   const handleBinanceConnect = async (email) => {
     const statusRes = await fetch(`/api/binance/status?email=${encodeURIComponent(email)}`);
     const statusData = await statusRes.json();
@@ -747,39 +649,12 @@ export default function HilaBotMiniApp() {
   };
 
   return (
-    <div
-      style={{
-        fontFamily: sysFont,
-        color: TEXT,
-        height: "100vh",
-        width: "100%",
-        background: DARK_BG,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        position: "relative",
-      }}
-    >
-      <style>{`
-        @keyframes tgBounce { 0%,80%,100%{transform:translateY(0);opacity:0.4} 40%{transform:translateY(-4px);opacity:1} }
-        * { box-sizing: border-box; }
-        ::-webkit-scrollbar { width: 0; height: 0; }
-        html, body { margin:0; padding:0; }
-      `}</style>
-
+    <div style={{ fontFamily: sysFont, color: TEXT, height: "100vh", width: "100%", background: DARK_BG, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+      <style>{`@keyframes tgBounce { 0%,80%,100%{transform:translateY(0);opacity:0.4} 40%{transform:translateY(-4px);opacity:1} } * { box-sizing: border-box; } ::-webkit-scrollbar { width: 0; height: 0; } html, body { margin:0; padding:0; }`}</style>
       <AppHeader onOpenSettings={() => setSettingsOpen(true)} binanceConnected={binance.connected} />
-
       {screens[tab]}
-
       <BottomNav tab={tab} setTab={setTab} isAdmin={isAdmin} />
-
-      <SettingsDrawer
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        binance={binance}
-        onBinanceConnect={handleBinanceConnect}
-        email={CURRENT_USER.email}
-      />
+      <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} binance={binance} onBinanceConnect={handleBinanceConnect} email={CURRENT_USER.email} />
     </div>
   );
 }
