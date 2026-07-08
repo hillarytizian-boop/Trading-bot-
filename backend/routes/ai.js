@@ -9,7 +9,7 @@ const client = new OpenAI({
 
 // Models to query
 const MODELS = [
-  'z-ai/glm-5.1',
+  'meta/llama-3.2-3b-instruct',
   'deepseek-ai/deepseek-v4-pro',
   'moonshotai/kimi-k2.6',
 ];
