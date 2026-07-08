@@ -336,7 +336,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
         body: JSON.stringify({ email: CURRENT_USER.email }),
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status || "idle"}` }]);
     } catch (err) {
       setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]);
     }
@@ -346,7 +346,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
     try {
       const res = await fetch('/api/agent/stop', { method: 'POST' });
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status || "idle"}` }]);
     } catch (err) {
       setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]);
     }
@@ -373,7 +373,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
       <div style={{ display: "flex", gap: 8, padding: "10px 14px", overflowX: "auto" }}>
         <StatChip label="Bot" value="Active" color={GREEN} dot />
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
-        <StatChip label="Win rate" value={binance.connected ? "Calculating..." : "—"} color={TEXT} />
+        <StatChip label="Win rate" value={binance.connected ? "—" : "—"} color={TEXT} />
         <StatChip label="Today" value={binance.connected ? "—" : "—"} color={GOLD} />
       </div>
 
