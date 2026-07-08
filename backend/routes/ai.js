@@ -1,26 +1,24 @@
 const router = require('express').Router();
 const OpenAI = require('openai');
 
-// Use the API key that just worked
 const client = new OpenAI({
   baseURL: 'https://integrate.api.nvidia.com/v1',
   apiKey: process.env.NVIDIA_API_KEY,
 });
 
-// Models – all confirmed active
+// Only the two best models
 const MODELS = [
-  'z-ai/glm-5.2',                  // Works (tested)
-  'deepseek-ai/deepseek-v4-pro',   // Strong technical analysis
-  'moonshotai/kimi-k2.6',          // Logical reasoning
+  'deepseek-ai/deepseek-v4-pro',
+  'z-ai/glm-5.2',
 ];
 
 async function queryModel(model, prompt) {
   const params = {
     model,
     messages: [{ role: 'user', content: prompt }],
-    temperature: 1,
-    top_p: 1,
-    max_tokens: 1024,
+    temperature: 0.7,
+    top_p: 0.95,
+    max_tokens: 256,
     stream: false,
   };
   try {
@@ -33,6 +31,7 @@ async function queryModel(model, prompt) {
         return { model, success: true, data: parsed };
       }
     }
+    // fallback
     const signalMatch = content.match(/\b(BUY|SELL|HOLD)\b/i);
     const confidenceMatch = content.match(/(\d{1,3})%/);
     return {
@@ -52,41 +51,34 @@ async function queryModel(model, prompt) {
 
 router.post('/analyze', async (req, res) => {
   const { market, price, indicators } = req.body;
-  if (!price) {
-    return res.status(400).json({ error: 'Price is required' });
-  }
+  if (!price) return res.status(400).json({ error: 'Price required' });
 
-  const prompt = `You are a professional crypto trading analyst.
-Given BTC/USDT price at ${price} with RSI ${indicators?.rsi || 'N/A'}, EMA ${indicators?.ema || 'N/A'}, MACD ${indicators?.macd || 'N/A'}.
-Provide a trading signal (BUY, SELL, or HOLD) with confidence (0-100) and a brief reason (max 50 words).
-Respond ONLY with valid JSON: {"signal": "BUY", "confidence": 85, "reason": "..."}`;
+  const prompt = `You are a crypto analyst. BTC/USDT price ${price}, RSI ${indicators?.rsi || 'N/A'}, EMA ${indicators?.ema || 'N/A'}, MACD ${indicators?.macd || 'N/A'}. Signal (BUY/SELL/HOLD) with confidence 0-100 and reason (max 20 words). Respond ONLY JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
 
   try {
-    const promises = MODELS.map(model => queryModel(model, prompt));
-    const results = await Promise.allSettled(promises);
+    const results = await Promise.allSettled(MODELS.map(m => queryModel(m, prompt)));
     const successful = results
       .filter(r => r.status === 'fulfilled' && r.value.success)
       .map(r => r.value.data);
 
     if (successful.length === 0) {
-      console.error('All models failed');
-      return res.status(500).json({ error: 'All AI models failed' });
+      return res.status(500).json({ error: 'All models failed' });
     }
 
+    // Majority vote (only two models, so tie goes to first model)
     const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
     successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
     const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
-    const avgConfidence = Math.round(successful.reduce((sum, d) => sum + d.confidence, 0) / successful.length);
+    const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
 
     res.json({
       signal: finalSignal,
       confidence: avgConfidence,
-      reason: `Consensus from ${successful.length} models. ${successful.map(d => d.reason).join(' ')}`,
+      reason: `Consensus. ${successful.map(d => d.reason).join(' ')}`,
       breakdown: successful.map((d, i) => ({
         model: MODELS[i] || 'unknown',
         signal: d.signal,
         confidence: d.confidence,
-        reason: d.reason,
       })),
     });
   } catch (error) {
