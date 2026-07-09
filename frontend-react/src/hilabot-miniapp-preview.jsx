@@ -1,5 +1,7 @@
 import Dashboard from "./Dashboard";
 import Backtest from "./Backtest";
+import Dashboard from "./Dashboard";
+import Backtest from "./Backtest";
 import { useState, useEffect, useRef } from "react";
 import Dashboard from "./Dashboard";
 import Backtest from "./Backtest";
@@ -629,8 +631,12 @@ export default function HilaBotMiniApp() {
   const screens = {
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
     backtest: <Backtest />,
+    backtest: <Backtest />,
     signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
+    backtest: <Backtest />,
+    dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
+    backtest: <Backtest />,
     backtest: <Backtest />,
     backtest: <Backtest />,
     trades: <TradesScreen />,
