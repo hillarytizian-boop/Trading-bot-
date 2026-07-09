@@ -13,9 +13,10 @@ if (missing.length) {
 
 // ─── Rate limiting ──────────────────────────────────────────────
 const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute
-  max: 100, // 100 requests per minute
+  windowMs: 1 * 60 * 1000,
+  max: 100,
   message: { error: 'Too many requests, please try again later.' },
+  skip: (req) => req.path === '/api/health', // skip health checks
 });
 
 function safeRequire(routePath) {
@@ -33,9 +34,12 @@ function safeRequire(routePath) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ─── Trust proxy (fixes rate limiter warning) ────────────────────
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(express.json());
-app.use('/api', limiter); // rate limit all API routes
+app.use('/api', limiter);
 
 // API routes
 app.use('/api/auth', safeRequire('./routes/auth'));
