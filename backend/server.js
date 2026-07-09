@@ -1,12 +1,26 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 
-// Helper to safely require a route – returns a fallback handler if the file is missing
+// ─── Environment validation ──────────────────────────────────────
+const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'NVIDIA_GLM_API_KEY', 'NVIDIA_DEEPSEEK_API_KEY'];
+const missing = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missing.length) {
+  console.error('❌ Missing required env vars:', missing.join(', '));
+  process.exit(1);
+}
+
+// ─── Rate limiting ──────────────────────────────────────────────
+const limiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 100, // 100 requests per minute
+  message: { error: 'Too many requests, please try again later.' },
+});
+
 function safeRequire(routePath) {
   try {
     const module = require(routePath);
-    // If it's a function (router), return it; otherwise return a fallback
     if (typeof module === 'function') return module;
     if (module && typeof module === 'object' && module.router) return module.router;
     return (req, res) => res.status(501).json({ error: `${routePath} not implemented` });
@@ -21,8 +35,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+app.use('/api', limiter); // rate limit all API routes
 
-// Mount all API routes
+// API routes
 app.use('/api/auth', safeRequire('./routes/auth'));
 app.use('/api/binance', safeRequire('./routes/binance'));
 app.use('/api/ai', safeRequire('./routes/ai'));
@@ -30,15 +45,15 @@ app.use('/api/bot', safeRequire('./routes/bot'));
 app.use('/api/admin', safeRequire('./routes/admin'));
 app.use('/api/trades', safeRequire('./routes/trades'));
 app.use('/api/agent', safeRequire('./routes/agent'));
+app.use('/api/backtest', safeRequire('./routes/backtest'));
 
-// Health check
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
 // Serve static frontend
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
-// Catch-all for SPA
+// Catch‑all for SPA
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });

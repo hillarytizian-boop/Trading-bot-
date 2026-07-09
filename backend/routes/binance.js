@@ -68,6 +68,19 @@ router.get('/status', async (req, res) => {
 
 // ─── BALANCE: fetch real USDT balance from Binance ────────────────────
 router.get('/balance', async (req, res) => {
+
+// ─── Get open orders (real-time from Binance) ──────────────────────
+router.get("/open-orders", async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.status(400).json({ error: "Missing email" });
+  try {
+    const client = await getBinanceClient(email);
+    const orders = await client.openOrders({ symbol: "BTCUSDT" });
+    res.json(orders);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Missing email' });
 
