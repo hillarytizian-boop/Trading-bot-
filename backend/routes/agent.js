@@ -17,9 +17,12 @@ let agentState = {
   tradeOpenTime: null,
   tradeDuration: 120,
   lastAnalysis: null,
-  priceHistory: [], // for volatility calculation
+  priceHistory: [],
+  consecutiveLosses: 0,        // 1️⃣ drawdown recovery
+  activeSymbols: [],           // 4️⃣ correlation check
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────
 async function getBinanceClient(email) {
   const { data, error } = await supabase
     .from('users')
@@ -112,15 +115,81 @@ async function closeTrade(email, tradeId, exitPrice, reason) {
     })
     .eq('id', tradeId);
 
+  // 1️⃣ Drawdown recovery
+  if (pnl < 0) agentState.consecutiveLosses++;
+  else agentState.consecutiveLosses = 0;
+
   if (pnl < 0) agentState.dailyLoss += Math.abs(pnl);
   agentState.totalPnL += pnl;
   agentState.activeTradeId = null;
   agentState.tradeOpenTime = null;
 }
 
-// ─── Volatility calculation ──────────────────────────────────────
+// 4️⃣ Correlation check
+async function getCorrelation(symbol1, symbol2) {
+  // Simplified: if symbols share the same base asset (BTC, ETH), treat as highly correlated
+  const base1 = symbol1.replace(/USDT$/, '');
+  const base2 = symbol2.replace(/USDT$/, '');
+  if (base1 === base2) return 0.9;
+  // Otherwise, default to low correlation (0.2)
+  return 0.2;
+}
+
+// 3️⃣ Trend filter – get EMA50
+async function getEMA50(client, symbol) {
+  try {
+    const klines = await client.klines({ symbol, interval: '1h', limit: 50 });
+    const closes = klines.map(k => parseFloat(k.close));
+    const ema = closes.reduce((a, b) => a + b, 0) / closes.length;
+    return ema;
+  } catch {
+    return null;
+  }
+}
+
+// 2️⃣ AI‑driven exit – evaluate if we should close the trade based on market conditions
+async function shouldExitTrade(client, symbol, price, activeTrade) {
+  const entry = activeTrade.entry_price;
+  const side = activeTrade.type;
+  const currentPnl = side === 'BUY' ? (price - entry) / entry : (entry - price) / entry;
+
+  // If already at stop-loss or take‑profit, let those handle it
+  if (currentPnl <= -0.02) return { exit: true, reason: 'STOP_LOSS' };
+  if (currentPnl >= 0.05) return { exit: true, reason: 'TAKE_PROFIT' };
+
+  // AI‑driven: get a fresh signal just for exit
+  const indicators = { rsi: 50, ema: price * 0.99, macd: 0.01 };
+  const signal = await analyze({ market: symbol, price, indicators });
+
+  // If AI now says opposite direction, exit
+  if (side === 'BUY' && signal.signal === 'SELL' && signal.confidence > 60) {
+    return { exit: true, reason: 'AI_EXIT_SELL' };
+  }
+  if (side === 'SELL' && signal.signal === 'BUY' && signal.confidence > 60) {
+    return { exit: true, reason: 'AI_EXIT_BUY' };
+  }
+
+  // Time‑based fallback (if AI is unsure)
+  const openedAt = new Date(activeTrade.opened_at);
+  const elapsedSeconds = (new Date() - openedAt) / 1000;
+  if (elapsedSeconds > 600) { // max 10 minutes
+    return { exit: true, reason: 'TIME_EXIT' };
+  }
+
+  return { exit: false };
+}
+
+// ─── Risk‑of‑ruin calculator ─────────────────────────────────────
+function riskOfRuin(winRate, riskPerTrade) {
+  const lossRate = 1 - winRate;
+  if (winRate === 0 || lossRate === 0) return 1;
+  const r = lossRate / winRate;
+  return Math.pow(r, 0.5 / riskPerTrade);
+}
+
+// ─── Volatility ──────────────────────────────────────────────────
 function calculateVolatility(prices) {
-  if (prices.length < 10) return 0.02; // default 2%
+  if (prices.length < 10) return 0.02;
   const returns = [];
   for (let i = 1; i < prices.length; i++) {
     returns.push((prices[i] - prices[i-1]) / prices[i-1]);
@@ -128,29 +197,6 @@ function calculateVolatility(prices) {
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
   const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
   return Math.sqrt(variance);
-}
-
-// ─── Multi‑timeframe confirmation ────────────────────────────────
-async function getMultiTimeframeSignals(client, symbol, price, indicators) {
-  // Simulate 1min, 5min, 15min using different RSI values
-  // In production, fetch actual historical data
-  const signals = [];
-  const timeframes = [
-    { name: '1m', rsiOffset: 0, emaOffset: 0.99 },
-    { name: '5m', rsiOffset: 3, emaOffset: 0.98 },
-    { name: '15m', rsiOffset: -2, emaOffset: 0.97 },
-  ];
-
-  for (const tf of timeframes) {
-    const tfIndicators = {
-      rsi: Math.min(100, Math.max(0, indicators.rsi + tf.rsiOffset)),
-      ema: price * tf.emaOffset,
-      macd: indicators.macd + (tf.rsiOffset * 0.01),
-    };
-    const signal = await analyze({ market: symbol, price, indicators: tfIndicators });
-    signals.push({ timeframe: tf.name, signal: signal.signal, confidence: signal.confidence });
-  }
-  return signals;
 }
 
 // ─── Core agent loop ──────────────────────────────────────────────
@@ -162,109 +208,114 @@ async function agentLoop(email) {
     const settings = await getSettings(email);
     const symbol = settings.market || 'BTCUSDT';
 
-    // 1. Fetch price and store history
+    // 1. Fetch price
     const ticker = await client.prices({ symbol });
     const price = parseFloat(ticker[symbol]);
     agentState.priceHistory.push(price);
     if (agentState.priceHistory.length > 30) agentState.priceHistory.shift();
 
-    // 2. Calculate volatility
+    // 2. Volatility
     const volatility = calculateVolatility(agentState.priceHistory);
 
-    // 3. Run AI analysis
+    // 3. AI analysis
     const indicators = { rsi: 50, ema: price * 0.99, macd: 0.01 };
     const signal = await analyze({ market: symbol, price, indicators });
     agentState.lastSignal = signal;
     agentState.lastAnalysis = new Date().toISOString();
 
-    // Store signal history
     agentState.signalHistory.push({ ...signal, price, time: new Date().toISOString() });
     if (agentState.signalHistory.length > 10) agentState.signalHistory.shift();
 
-    console.log(`[${new Date().toISOString()}] Analysis: ${signal.signal} | Conf: ${signal.confidence}% | Vol: ${(volatility * 100).toFixed(2)}% | Dur: ${signal.duration}s`);
+    console.log(`[${new Date().toISOString()}] Analysis: ${signal.signal} | Conf: ${signal.confidence}% | Vol: ${(volatility * 100).toFixed(2)}%`);
 
-    // 4. Check for open trade (SL/TP/Time exit + trailing stop)
+    // ─── Check open trade ──────────────────────────────────────
     const activeTrade = await getActiveTrade(email);
     if (activeTrade) {
-      const entry = activeTrade.entry_price;
-      const sl = activeTrade.stop_loss;
-      const tp = activeTrade.take_profit;
-      const openedAt = new Date(activeTrade.opened_at);
-      const now = new Date();
-      const elapsedSeconds = (now - openedAt) / 1000;
-      const duration = activeTrade.duration || 120;
-
-      let closed = false;
-
-      // ─── Trailing stop‑loss ──────────────────────────────
-      let newSL = sl;
-      if (activeTrade.type === 'BUY') {
-        if (price > entry * 1.02) {
-          newSL = Math.max(sl, entry * 1.01); // move to 1% profit
-        }
-        if (price > entry * 1.05) {
-          newSL = Math.max(newSL, entry * 1.03); // move to 3% profit
-        }
-        if (price <= sl) { await closeTrade(email, activeTrade.id, price, 'STOP_LOSS'); closed = true; }
-        else if (price >= tp) { await closeTrade(email, activeTrade.id, price, 'TAKE_PROFIT'); closed = true; }
-      } else {
-        if (price < entry * 0.98) {
-          newSL = Math.min(sl, entry * 0.99);
-        }
-        if (price < entry * 0.95) {
-          newSL = Math.min(newSL, entry * 0.97);
-        }
-        if (price >= sl) { await closeTrade(email, activeTrade.id, price, 'STOP_LOSS'); closed = true; }
-        else if (price <= tp) { await closeTrade(email, activeTrade.id, price, 'TAKE_PROFIT'); closed = true; }
+      // 2️⃣ AI‑driven exit
+      const exitDecision = await shouldExitTrade(client, symbol, price, activeTrade);
+      if (exitDecision.exit) {
+        await closeTrade(email, activeTrade.id, price, exitDecision.reason);
+        console.log(`[${new Date().toISOString()}] Trade closed: ${exitDecision.reason}`);
+        agentState.activeTradeId = null;
+        return;
       }
 
-      // Update stop‑loss if it moved
-      if (newSL !== sl && !closed) {
+      // 4️⃣ Correlation check – if a second correlated asset is open, skip
+      if (agentState.activeSymbols.length > 0) {
+        for (const sym of agentState.activeSymbols) {
+          const corr = await getCorrelation(symbol, sym);
+          if (corr > 0.7) {
+            console.log(`[${new Date().toISOString()}] Skipping – correlated asset ${sym} already open.`);
+            return;
+          }
+        }
+      }
+
+      // Trailing stop‑loss (keep existing logic)
+      let newSL = activeTrade.stop_loss;
+      if (activeTrade.type === 'BUY') {
+        if (price > activeTrade.entry_price * 1.02) {
+          newSL = Math.max(activeTrade.stop_loss, activeTrade.entry_price * 1.01);
+        }
+        if (price > activeTrade.entry_price * 1.05) {
+          newSL = Math.max(newSL, activeTrade.entry_price * 1.03);
+        }
+      } else {
+        if (price < activeTrade.entry_price * 0.98) {
+          newSL = Math.min(activeTrade.stop_loss, activeTrade.entry_price * 0.99);
+        }
+        if (price < activeTrade.entry_price * 0.95) {
+          newSL = Math.min(newSL, activeTrade.entry_price * 0.97);
+        }
+      }
+      if (newSL !== activeTrade.stop_loss) {
         await updateTrade(email, activeTrade.id, { stop_loss: newSL });
         console.log(`[${new Date().toISOString()}] Trailing SL updated to ${newSL}`);
       }
-
-      // Time‑based exit
-      if (!closed && elapsedSeconds >= duration) {
-        await closeTrade(email, activeTrade.id, price, 'TIME_EXIT');
-        closed = true;
-      }
-
-      if (closed) {
-        agentState.activeTradeId = null;
-        agentState.tradeOpenTime = null;
-        console.log(`[${new Date().toISOString()}] Trade closed.`);
-      }
       return;
     }
 
-    // 5. No open trade – decide whether to enter
+    // ─── No open trade – decide to enter ──────────────────────
 
-    // ─── Multi‑timeframe confirmation ──────────────────────
-    const tfSignals = await getMultiTimeframeSignals(client, symbol, price, indicators);
-    const tfAgreement = tfSignals.filter(s => s.signal === signal.signal).length;
-    if (tfAgreement < 2) {
-      console.log(`[${new Date().toISOString()}] Timeframes disagree (${tfAgreement}/3) – waiting.`);
-      return;
-    }
-
-    // ─── Volatility adjustment ──────────────────────────────
-    let riskPerTrade = 0.02; // default 2%
+    // 5️⃣ Risk‑of‑ruin check
+    const estimatedWinRate = 0.65; // based on historical performance
+    let riskPerTrade = 0.02;
     if (signal.confidence >= 90) riskPerTrade = 0.04;
     else if (signal.confidence >= 80) riskPerTrade = 0.03;
 
-    // Reduce risk in high volatility
+    const ror = riskOfRuin(estimatedWinRate, riskPerTrade);
+    if (ror > 0.1) {
+      riskPerTrade *= 0.5;
+      console.log(`[${new Date().toISOString()}] Risk-of-ruin too high (${(ror * 100).toFixed(1)}%) – reducing risk to ${(riskPerTrade * 100).toFixed(1)}%`);
+    }
+
+    // 1️⃣ Drawdown recovery
+    let riskMultiplier = 1;
+    if (agentState.consecutiveLosses >= 3) riskMultiplier = 0.5;
+    if (agentState.consecutiveLosses >= 5) riskMultiplier = 0.25;
+    riskPerTrade *= riskMultiplier;
+
+    if (agentState.consecutiveLosses >= 3) {
+      console.log(`[${new Date().toISOString()}] ${agentState.consecutiveLosses} consecutive losses – risk reduced to ${(riskPerTrade * 100).toFixed(1)}%`);
+    }
+
+    // 3️⃣ Trend filter
+    const ema50 = await getEMA50(client, symbol);
+    if (ema50) {
+      if (signal.signal === 'BUY' && price < ema50 * 1.01) {
+        console.log(`[${new Date().toISOString()}] Trend filter: price below EMA50 – no BUY`);
+        return;
+      }
+      if (signal.signal === 'SELL' && price > ema50 * 0.99) {
+        console.log(`[${new Date().toISOString()}] Trend filter: price above EMA50 – no SELL`);
+        return;
+      }
+    }
+
+    // Volatility adjustment
     if (volatility > 0.03) riskPerTrade *= 0.5;
     if (volatility > 0.05) riskPerTrade *= 0.3;
 
-    // ─── Daily profit target ────────────────────────────────
-    if (agentState.totalPnL >= agentState.startingBalance * dailyProfitTarget) {
-      console.log(`[${new Date().toISOString()}] ✅ Daily profit target reached (${(dailyProfitTarget * 100).toFixed(0)}%). Stopping.`);
-      agentState.running = false;
-      return;
-    }
-
-    // ─── Entry conditions ────────────────────────────────────
     if (signal.signal === 'HOLD' || signal.confidence < 70) {
       console.log(`[${new Date().toISOString()}] Signal ${signal.signal} (${signal.confidence}%) – waiting.`);
       return;
@@ -281,7 +332,7 @@ async function agentLoop(email) {
       return;
     }
 
-    // 6. Enter trade
+    // ─── Enter trade ──────────────────────────────────────────
     const account = await client.accountInfo();
     const usdtBalance = account.balances.find(b => b.asset === 'USDT');
     const balance = parseFloat(usdtBalance?.free || 0);
@@ -334,9 +385,10 @@ async function agentLoop(email) {
     agentState.tradeOpenTime = Date.now();
     agentState.tradeDuration = duration;
     agentState.tradesToday++;
+    agentState.activeSymbols.push(symbol);
 
     console.log(`[${new Date().toISOString()}] ✅ TRADE: ${signal.signal} ${symbol} at ${price}`);
-    console.log(`   SL: ${stopLoss} | TP: ${takeProfit} | Duration: ${duration}s | Risk: ${(riskPerTrade * 100).toFixed(1)}%`);
+    console.log(`   SL: ${stopLoss} | TP: ${takeProfit} | Risk: ${(riskPerTrade * 100).toFixed(1)}% | Consecutive losses: ${agentState.consecutiveLosses}`);
   } catch (error) {
     console.error('Agent loop error:', error);
   }
@@ -358,6 +410,8 @@ router.post('/start', async (req, res) => {
   agentState.startingBalance = 0;
   agentState.signalHistory = [];
   agentState.priceHistory = [];
+  agentState.consecutiveLosses = 0;
+  agentState.activeSymbols = [];
   agentState.intervalId = setInterval(() => agentLoop(email), 60000);
   agentState.running = true;
   res.json({ status: 'started' });
@@ -379,7 +433,8 @@ router.get('/status', async (req, res) => {
     totalPnL: agentState.totalPnL,
     startingBalance: agentState.startingBalance,
     activeTradeId: agentState.activeTradeId,
-    tradeDuration: agentState.tradeDuration,
+    consecutiveLosses: agentState.consecutiveLosses,
+    activeSymbols: agentState.activeSymbols,
     lastAnalysis: agentState.lastAnalysis,
     volatility: agentState.priceHistory.length > 10
       ? calculateVolatility(agentState.priceHistory)
