@@ -2,26 +2,27 @@ const router = require('express').Router();
 const Binance = require('binance-api-node').default;
 const { analyze } = require('./ai');
 
-// ─── Helper: fetch all historical klines ──────────────────────────
-async function fetchAllKlines(symbol, startMs, endMs, interval = '1h') {
+// ─── Helper: fetch all historical candles ──────────────────────────
+async function fetchAllCandles(symbol, startMs, endMs, interval = '1h') {
   const client = Binance();
   const limit = 1000;
-  const allKlines = [];
+  const allCandles = [];
   let from = startMs;
 
   while (from < endMs) {
-    const klines = await client.klines({
+    const candles = await client.candles({
       symbol: symbol || 'BTCUSDT',
       interval: interval,
       startTime: from,
       endTime: Math.min(from + limit * 3600000, endMs),
       limit: limit,
     });
-    if (!klines || klines.length === 0) break;
-    allKlines.push(...klines);
-    from = klines[klines.length - 1].openTime + 1;
+    if (!candles || candles.length === 0) break;
+    allCandles.push(...candles);
+    // Move to the next batch (last candle openTime + 1ms)
+    from = candles[candles.length - 1].openTime + 1;
   }
-  return allKlines;
+  return allCandles;
 }
 
 // ─── Main backtest endpoint ──────────────────────────────────────
@@ -37,9 +38,9 @@ router.post('/run', async (req, res) => {
     const endMs = new Date(endDate).getTime();
 
     // 1. Fetch historical data from Binance
-    const klines = await fetchAllKlines(symbol, startMs, endMs);
+    const candles = await fetchAllCandles(symbol, startMs, endMs);
 
-    if (klines.length < 10) {
+    if (candles.length < 10) {
       return res.status(400).json({ error: 'Not enough historical data for the selected range' });
     }
 
@@ -56,10 +57,10 @@ router.post('/run', async (req, res) => {
 
     const risk = parseFloat(riskPerTrade) / 100 || 0.02; // default 2%
 
-    for (let i = 50; i < klines.length; i++) {
-      const candle = klines[i];
+    for (let i = 50; i < candles.length; i++) {
+      const candle = candles[i];
       const price = parseFloat(candle.close);
-      const prevCandle = klines[i - 1];
+      const prevCandle = candles[i - 1];
       const prevPrice = parseFloat(prevCandle.close);
 
       // Simulate indicators (simplified for backtest)
@@ -116,7 +117,7 @@ router.post('/run', async (req, res) => {
           if (dd > maxDrawdown) maxDrawdown = dd;
           position = 0;
           entryPrice = 0;
-        } else if (i === klines.length - 1) {
+        } else if (i === candles.length - 1) {
           // End of data – close position
           balance += pnl;
           if (pnl > 0) winningTrades++;
@@ -141,7 +142,7 @@ router.post('/run', async (req, res) => {
       totalTrades,
       winningTrades,
       losingTrades,
-      message: `Backtest complete on ${klines.length} candles`,
+      message: `Backtest complete on ${candles.length} candles`,
     });
   } catch (error) {
     console.error('Backtest error:', error);
