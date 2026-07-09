@@ -576,7 +576,6 @@ function BottomNav({ tab, setTab, isAdmin }) {
     { id: "backtest", icon: "🔬", label: "Backtest" },
   ];
   if (isAdmin) tabs.push({ id: "admin", icon: "🛡️", label: "Admin" });
-
   return (
     <div style={{ display: "flex", background: DARK_PANEL, borderTop: `1px solid ${DARK_BORDER}`, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }}>
       {tabs.map((t) => (
