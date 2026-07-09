@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import Chart from "./Chart";
 
 /* ───────────────────────── Telegram Mini App design tokens ───────────────────────── */
 const TG_BLUE = "#2AABEE";
@@ -285,11 +286,25 @@ function SignalsScreen({ binance, onOpenSettings }) {
   useEffect(() => {
     wsRef.current = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
     wsRef.current.onmessage = (e) => {
+  // Fetch signal history every 10 seconds
+  const interval = setInterval(() => {
+    fetch("/api/agent/status")
+      .then(r => r.json())
+      .then(data => {
+        if (data.signalHistory) {
+          setSignalHistory(data.signalHistory.slice(-30));
+        }
+      })
+      .catch(() => {});
+  }, 10000);
+  return () => clearInterval(interval);
       const data = JSON.parse(e.data);
       if (data.p) {
         const newPrice = parseFloat(data.p);
         setPrice(newPrice);
         setPriceHistory(prev => {
+      // Also store signal when it arrives (from analysis)
+      // We'll update signals separately via the /api/agent/status endpoint
           const updated = [...prev, newPrice];
           return updated.slice(-50); // keep last 50 prices
         });
@@ -378,24 +393,19 @@ function SignalsScreen({ binance, onOpenSettings }) {
       </div>
 
       {/* Live Price + Chart */}
-      <div style={{ margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, border: `1px solid ${DARK_BORDER}` }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-          <span style={{ fontSize: 12, color: MUTED }}>BTC/USDT</span>
-          <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace" }}>{price ? `$${price.toFixed(2)}` : 'Loading...'}</span>
-        </div>
-        <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} style={{ width: '100%', height: chartHeight }}>
-          <defs>
-            <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={TG_BLUE} stopOpacity="0.3"/>
-              <stop offset="100%" stopColor={TG_BLUE} stopOpacity="0"/>
-            </linearGradient>
-          </defs>
-          <path d={areaPath} fill="url(#areaGradient)" />
-          <path d={linePath} stroke={TG_BLUE} strokeWidth="2" fill="none" />
-          {points.map((p, i) => (
-            <circle key={i} cx={p.x} cy={p.y} r="2" fill={TG_BLUE} />
-          ))}
-        </svg>
+<div style={{ margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, border: `1px solid ${DARK_BORDER}`, height: 220 }}>
+
+  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, padding: "0 4px" }}>
+
+    <span style={{ fontSize: 11, color: MUTED }}>AI Market Chart</span>
+
+    <span style={{ fontSize: 11, color: MUTED }}>{price ? `$${price.toFixed(2)}` : "Loading..."}</span>
+
+  </div>
+
+  <Chart priceHistory={priceHistory} signals={signalHistory} />
+
+</div>
       </div>
 
       {!binance.connected && (
