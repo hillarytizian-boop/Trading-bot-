@@ -258,7 +258,6 @@ async function agentLoop(email) {
     if (volatility > 0.05) riskPerTrade *= 0.3;
 
     // ─── Daily profit target ────────────────────────────────
-    const dailyProfitTarget = 0.05; // 5%
     if (agentState.totalPnL >= agentState.startingBalance * dailyProfitTarget) {
       console.log(`[${new Date().toISOString()}] ✅ Daily profit target reached (${(dailyProfitTarget * 100).toFixed(0)}%). Stopping.`);
       agentState.running = false;
