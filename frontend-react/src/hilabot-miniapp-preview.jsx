@@ -1,10 +1,8 @@
-import Dashboard from "./Dashboard";
-import Backtest from "./Backtest";
-import Dashboard from "./Dashboard";
-import Backtest from "./Backtest";
 import { useState, useEffect, useRef } from "react";
-import Dashboard from "./Dashboard";
+import Chart from "./Chart";
 import Backtest from "./Backtest";
+import Dashboard from "./Dashboard";
+import { useState, useEffect, useRef } from "react";
 import Chart from "./Chart";
 
 const TG_BLUE = "#2AABEE";
