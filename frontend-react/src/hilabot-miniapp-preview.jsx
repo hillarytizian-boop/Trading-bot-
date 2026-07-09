@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import Dashboard from "./Dashboard";
+import Backtest from "./Backtest";
 import Chart from "./Chart";
 
 const TG_BLUE = "#2AABEE";
@@ -567,6 +569,8 @@ function AdminScreen() {
 function BottomNav({ tab, setTab, isAdmin }) {
   const tabs = [
     { id: "signals", icon: "💬", label: "Signals" },
+    { id: "dashboard", icon: "📊", label: "Dashboard" },
+    { id: "backtest", icon: "🔬", label: "Backtest" },
     { id: "trades", icon: "📈", label: "Trades" },
     { id: "history", icon: "📋", label: "History" },
     { id: "profile", icon: "👤", label: "Profile" },
@@ -623,6 +627,8 @@ export default function HilaBotMiniApp() {
 
   const screens = {
     signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
+    dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
+    backtest: <Backtest />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
     profile: <ProfileScreen user={CURRENT_USER} binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
