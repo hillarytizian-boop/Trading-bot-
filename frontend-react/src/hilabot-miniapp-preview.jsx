@@ -439,7 +439,7 @@ function TradesScreen() {
 
   useEffect(() => {
     const email = CURRENT_USER.email;
-    fetch(`/api/trades/active?email=${encodeURIComponent(email)}`)
+    fetch( url, { signal: AbortSignal.timeout(5000) }  url, { signal: AbortSignal.timeout(5000) } `/api/trades/active?email=${encodeURIComponent(email)}`)
       .then(r => {
         if (!r.ok) throw new Error('Failed to fetch active trades');
         return r.json();
@@ -449,6 +449,7 @@ function TradesScreen() {
         setLoading(false);
       })
       .catch(err => {
+    console.error("Trades fetch error:", err);
         setError(err.message);
         setLoading(false);
       });
@@ -486,7 +487,7 @@ function HistoryScreen() {
 
   useEffect(() => {
     const email = CURRENT_USER.email;
-    fetch(`/api/trades?email=${encodeURIComponent(email)}`)
+    fetch( url, { signal: AbortSignal.timeout(5000) } `/api/trades?email=${encodeURIComponent(email)}`)
       .then(r => {
         if (!r.ok) throw new Error('Failed to fetch history');
         return r.json();
@@ -496,6 +497,7 @@ function HistoryScreen() {
         setLoading(false);
       })
       .catch(err => {
+    console.error("Trades fetch error:", err);
         setError(err.message);
         setLoading(false);
       });
