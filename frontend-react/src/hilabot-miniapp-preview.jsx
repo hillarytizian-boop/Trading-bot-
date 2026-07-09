@@ -1,3 +1,5 @@
+import Dashboard from "./Dashboard";
+import Backtest from "./Backtest";
 import { useState, useEffect, useRef } from "react";
 import Dashboard from "./Dashboard";
 import Backtest from "./Backtest";
@@ -570,13 +572,12 @@ function BottomNav({ tab, setTab, isAdmin }) {
   const tabs = [
     { id: "signals", icon: "💬", label: "Signals" },
     { id: "dashboard", icon: "📊", label: "Dashboard" },
-    { id: "backtest", icon: "🔬", label: "Backtest" },
     { id: "trades", icon: "📈", label: "Trades" },
     { id: "history", icon: "📋", label: "History" },
     { id: "profile", icon: "👤", label: "Profile" },
+    { id: "backtest", icon: "🔬", label: "Backtest" },
   ];
   if (isAdmin) tabs.push({ id: "admin", icon: "🛡️", label: "Admin" });
-
   return (
     <div style={{ display: "flex", background: DARK_PANEL, borderTop: `1px solid ${DARK_BORDER}`, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }}>
       {tabs.map((t) => (
@@ -626,8 +627,11 @@ export default function HilaBotMiniApp() {
   };
 
   const screens = {
+    dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
+    backtest: <Backtest />,
     signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
+    backtest: <Backtest />,
     backtest: <Backtest />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
