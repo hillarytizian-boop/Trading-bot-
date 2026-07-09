@@ -145,7 +145,7 @@ function AppHeader({ onOpenSettings, binanceConnected }) {
   );
 }
 
-/* ───────────────────────── Settings Drawer (Binance version) ───────────────────────── */
+/* ───────────────────────── Settings Drawer ───────────────────────── */
 function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
@@ -153,12 +153,11 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   const [status, setStatus] = useState('idle');
   const [balance, setBalance] = useState('0.00');
   const [riskLevel, setRiskLevel] = useState("MEDIUM");
-  const [maxDailyLoss, setMaxDailyLoss] = useState(100);
-  const [maxTrades, setMaxTrades] = useState(50);
+  const [maxDailyLoss, setMaxDailyLoss] = useState(10);
+  const [maxTrades, setMaxTrades] = useState(30);
   const [autoCompound, setAutoCompound] = useState(true);
   const [notifications, setNotifications] = useState(true);
   const [autoStop, setAutoStop] = useState(true);
-
   const isConnected = binance?.connected || false;
   const displayBalance = binance?.balance || '0.00';
 
@@ -273,44 +272,46 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   );
 }
 
-/* ───────────────────────── SIGNALS with chart ───────────────────────── */
+/* ───────────────────────── SignalsScreen with Chart ───────────────────────── */
 function SignalsScreen({ binance, onOpenSettings }) {
   const [messages, setMessages] = useState([]);
   const [price, setPrice] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
+  const [signalHistory, setSignalHistory] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
 
-  // Connect to Binance WebSocket for real-time price
+  // Connect to Binance WebSocket
   useEffect(() => {
     wsRef.current = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
     wsRef.current.onmessage = (e) => {
-  // Fetch signal history every 10 seconds
-  const interval = setInterval(() => {
-    fetch("/api/agent/status")
-      .then(r => r.json())
-      .then(data => {
-        if (data.signalHistory) {
-          setSignalHistory(data.signalHistory.slice(-30));
-        }
-      })
-      .catch(() => {});
-  }, 10000);
-  return () => clearInterval(interval);
       const data = JSON.parse(e.data);
       if (data.p) {
         const newPrice = parseFloat(data.p);
         setPrice(newPrice);
         setPriceHistory(prev => {
-      // Also store signal when it arrives (from analysis)
-      // We'll update signals separately via the /api/agent/status endpoint
           const updated = [...prev, newPrice];
-          return updated.slice(-50); // keep last 50 prices
+          return updated.slice(-50);
         });
       }
     };
     return () => wsRef.current?.close();
+  }, []);
+
+  // Fetch signal history every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetch('/api/agent/status')
+        .then(r => r.json())
+        .then(data => {
+          if (data.signalHistory) {
+            setSignalHistory(data.signalHistory.slice(-30));
+          }
+        })
+        .catch(() => {});
+    }, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -334,7 +335,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: 'Analysis result:',
-        signal: data, // data has signal, confidence, reason
+        signal: data,
         reason: data.reason,
       }]);
     } catch (err) {
@@ -351,7 +352,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
         body: JSON.stringify({ email: CURRENT_USER.email }),
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status || "idle"}` }]);
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
     } catch (err) {
       setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]);
     }
@@ -361,51 +362,28 @@ function SignalsScreen({ binance, onOpenSettings }) {
     try {
       const res = await fetch('/api/agent/stop', { method: 'POST' });
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status || "idle"}` }]);
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
     } catch (err) {
       setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]);
     }
   };
 
-  // Build SVG chart
-  const chartWidth = 300;
-  const chartHeight = 80;
-  const padding = 10;
-  const dataPoints = priceHistory.length > 0 ? priceHistory : [0];
-  const minPrice = Math.min(...dataPoints) * 0.999;
-  const maxPrice = Math.max(...dataPoints) * 1.001;
-  const range = maxPrice - minPrice || 1;
-  const points = dataPoints.map((p, i) => ({
-    x: padding + (i / (dataPoints.length - 1 || 1)) * (chartWidth - 2 * padding),
-    y: chartHeight - padding - ((p - minPrice) / range) * (chartHeight - 2 * padding),
-  }));
-  const linePath = points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ');
-  const areaPath = points.map((p, i) => (i === 0 ? `M${p.x},${p.y}` : `L${p.x},${p.y}`)).join(' ') + ` L${points[points.length-1].x},${chartHeight - padding} L${points[0].x},${chartHeight - padding} Z`;
-
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: DARK_BG, backgroundImage: "radial-gradient(circle at 30% 0%, rgba(42,171,238,0.06), transparent 45%)" }}>
-      {/* Status strip */}
       <div style={{ display: "flex", gap: 8, padding: "10px 14px", overflowX: "auto" }}>
         <StatChip label="Bot" value="Active" color={GREEN} dot />
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
-        <StatChip label="Win rate" value={binance.connected ? "—" : "—"} color={TEXT} />
-        <StatChip label="Today" value={binance.connected ? "—" : "—"} color={GOLD} />
+        <StatChip label="Win rate" value="—" color={TEXT} />
+        <StatChip label="Today" value="—" color={GOLD} />
       </div>
 
-      {/* Live Price + Chart */}
-<div style={{ margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, border: `1px solid ${DARK_BORDER}`, height: 220 }}>
-
-  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, padding: "0 4px" }}>
-
-    <span style={{ fontSize: 11, color: MUTED }}>AI Market Chart</span>
-
-    <span style={{ fontSize: 11, color: MUTED }}>{price ? `$${price.toFixed(2)}` : "Loading..."}</span>
-
-  </div>
-
-  <Chart priceHistory={priceHistory} signals={signalHistory} />
-
-</div>
+      {/* AI Market Chart */}
+      <div style={{ margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, border: `1px solid ${DARK_BORDER}`, height: 220 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, padding: "0 4px" }}>
+          <span style={{ fontSize: 11, color: MUTED }}>AI Market Chart</span>
+          <span style={{ fontSize: 11, color: MUTED }}>{price ? `$${price.toFixed(2)}` : "Loading..."}</span>
+        </div>
+        <Chart priceHistory={priceHistory} signals={signalHistory} />
       </div>
 
       {!binance.connected && (
@@ -415,7 +393,6 @@ function SignalsScreen({ binance, onOpenSettings }) {
         </div>
       )}
 
-      {/* Message thread */}
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "6px 14px 14px", minHeight: 0 }}>
         <div style={{ textAlign: "center", margin: "8px 0 16px" }}>
           <span style={{ background: "rgba(255,255,255,0.06)", color: MUTED, fontSize: 11, padding: "4px 12px", borderRadius: 12 }}>Today</span>
@@ -426,7 +403,7 @@ function SignalsScreen({ binance, onOpenSettings }) {
               {m.text}
               {m.signal && (
                 <>
-                  <SignalChip signal={m.signal.signal} confidence={m.signal.confidence} risk={m.signal.risk} />
+                  <SignalChip signal={m.signal.signal} confidence={m.signal.confidence} risk={m.signal.risk || "LOW"} />
                   <p style={{ fontSize: 12.5, color: "#9fb3c0", marginTop: 8, fontStyle: "italic" }}>"{m.reason}"</p>
                 </>
               )}
@@ -444,7 +421,6 @@ function SignalsScreen({ binance, onOpenSettings }) {
         )}
       </div>
 
-      {/* Action bar */}
       <div style={{ padding: "10px 12px", borderTop: `1px solid ${DARK_BORDER}`, background: DARK_PANEL, display: "flex", gap: 8, overflowX: "auto" }}>
         <button onClick={runAnalysis} style={pill(TG_BLUE)}>🧠 Analyze</button>
         <button onClick={startAgent} style={pill(GREEN)}>▶ Start</button>
@@ -467,7 +443,7 @@ function StatChip({ label, value, color, dot }) {
   );
 }
 
-/* ───────────────────────── TRADES (active positions) ───────────────────────── */
+/* ───────────────────────── Trades ───────────────────────── */
 function TradesScreen() {
   const [activeTrades, setActiveTrades] = useState([]);
   useEffect(() => {
@@ -498,7 +474,7 @@ function TradesScreen() {
   );
 }
 
-/* ───────────────────────── HISTORY ───────────────────────── */
+/* ───────────────────────── History ───────────────────────── */
 function HistoryScreen() {
   const [history, setHistory] = useState([]);
   useEffect(() => {
@@ -535,7 +511,7 @@ function HistoryScreen() {
   );
 }
 
-/* ───────────────────────── PROFILE ───────────────────────── */
+/* ───────────────────────── Profile ───────────────────────── */
 function ProfileScreen({ user, binance, onOpenSettings }) {
   return (
     <div style={{ flex: 1, overflowY: "auto", background: DARK_BG, padding: 16 }}>
@@ -560,7 +536,7 @@ function ProfileScreen({ user, binance, onOpenSettings }) {
   );
 }
 
-/* ───────────────────────── ADMIN ───────────────────────── */
+/* ───────────────────────── Admin ───────────────────────── */
 function AdminScreen() {
   const users = Array.from({ length: 8 }, (_, i) => ({
     id: i + 1,
