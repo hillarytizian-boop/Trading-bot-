@@ -308,6 +308,7 @@ function SignalsScreen({
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
         {paperMode && paperBalance !== null && <StatChip label="Paper Balance" value={`$${paperBalance.toFixed(2)}`} color={GOLD} />}
         <StatChip label="Ticks" value={tickCount} color={TG_BLUE} />
+        <StatChip label="Regime" value={regime || "—"} color={TG_BLUE} />
       </div>
       <div style={{ flexShrink: 0, margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, height: 200 }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
