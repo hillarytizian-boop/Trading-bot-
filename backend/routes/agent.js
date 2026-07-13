@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const supabase = require('../db');
-const { analyze } = require('./ai');
+const { getAnalysis } = require('./ai');
 const { v4: uuidv4 } = require('uuid');
 
 let agentState = {
@@ -12,7 +12,7 @@ let agentState = {
   activeTradeId: null,
   tradeOpenTime: null,
   paperBalance: 1000,
-  priceHistory: [], // stores last 50 close prices
+  priceHistory: [],
 };
 
 async function getSettings(email) {
@@ -105,7 +105,6 @@ async function closeTrade(email, tradeId, exitPrice, reason, isPaper) {
   agentState.tradeOpenTime = null;
 }
 
-// ─── Compute RSI from price array ──────────────────────────────
 function computeRSI(prices, period = 14) {
   if (prices.length < period + 1) return 50;
   let gains = 0, losses = 0;
@@ -121,7 +120,6 @@ function computeRSI(prices, period = 14) {
   return 100 - (100 / (1 + rs));
 }
 
-// ─── Compute MACD (simplified) ──────────────────────────────────
 function computeMACD(prices, fast = 12, slow = 26) {
   if (prices.length < slow) return 0;
   const emaFast = prices.slice(-fast).reduce((a,b) => a+b, 0) / Math.min(fast, prices.length);
@@ -137,17 +135,14 @@ async function agentLoop(email) {
     const symbol = settings.market || 'BTCUSDT';
     const isPaper = settings.paperMode || false;
 
-    // Fetch current price from Binance
     const priceRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
     const priceData = await priceRes.json();
     const price = parseFloat(priceData.price);
     if (!price) return;
 
-    // Update price history (keep last 50)
     agentState.priceHistory.push(price);
     if (agentState.priceHistory.length > 50) agentState.priceHistory.shift();
 
-    // Check open trade
     const activeTrade = await getActiveTrade(email);
     if (activeTrade) {
       const entry = activeTrade.entry_price;
@@ -176,26 +171,14 @@ async function agentLoop(email) {
       return;
     }
 
-    // No open trade – get AI signal with real indicators
+    // Get real indicators
     const prices = agentState.priceHistory;
-    let rsi = 50, macd = 0;
-    if (prices.length >= 20) {
-      rsi = computeRSI(prices);
-      macd = computeMACD(prices);
-    }
+    const rsi = prices.length >= 20 ? computeRSI(prices) : 50;
+    const macd = prices.length >= 26 ? computeMACD(prices) : 0;
+    const ema = prices.length > 0 ? prices[prices.length-1] * 0.99 : price;
 
-    // Call AI endpoint with real indicators
-    const aiRes = await fetch('http://localhost:10000/api/ai/analyze', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        market: symbol,
-        price,
-        indicators: { rsi, ema: prices[prices.length-1] || price, macd },
-        email,
-      }),
-    });
-    const signal = await aiRes.json();
+    // Call AI analysis directly
+    const signal = await getAnalysis(symbol, price, { rsi, ema, macd }, email);
 
     if (signal.signal === 'HOLD' || signal.confidence < 60) return;
     if (agentState.tradesToday >= settings.maxTradesPerDay) return;
@@ -204,7 +187,6 @@ async function agentLoop(email) {
       return;
     }
 
-    // Position sizing
     const balance = isPaper ? agentState.paperBalance : 1000;
     if (balance < 10) return;
     const riskPerTrade = 0.02;

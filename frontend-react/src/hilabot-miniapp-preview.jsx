@@ -320,9 +320,9 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
           m.type === "bot" ? (
             <BotBubble key={i} time={m.time}>
               {m.text}
-              {m.signal && (
+              {m.signal m.signal && (m.signal && ( m.signal.signal m.signal && (m.signal && ( (
                 <>
-                  <SignalChip signal={m.signal.signal} confidence={m.signal.confidence} risk={m.signal.risk || "LOW"} />
+                  <SignalChip signal={m.signal.signal} confidence={m.signal.confidence || 0} confidence={m.signal.confidence} risk={m.signal.risk || "LOW"} />
                   <p style={{ fontSize: 12.5, color: "#9fb3c0", marginTop: 8, fontStyle: "italic" }}>"{m.reason}"</p>
                 </>
               )}

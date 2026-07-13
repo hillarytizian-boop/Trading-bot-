@@ -1,19 +1,33 @@
 const router = require('express').Router();
 const axios = require('axios');
 
-// Simple fallback using provided indicators
+// Fallback function that returns signal, confidence, reason
 function fallbackSignal(indicators) {
-  const { rsi, ema, macd } = indicators;
+  const { rsi, macd } = indicators;
   let score = 0;
   if (rsi < 30) score += 2;
   else if (rsi > 70) score -= 2;
   if (macd > 0) score += 1;
-  else score -= 1;
-  // simple ema trend (ema compared to current price – we don't have price here, but we can use a proxy)
-  // We'll just use rsi and macd
-  const action = score >= 3 ? 'BUY' : score <= -3 ? 'SELL' : 'HOLD';
+  else if (macd < 0) score -= 1;
+  const signal = score >= 3 ? 'BUY' : score <= -3 ? 'SELL' : 'HOLD';
   const confidence = Math.min(Math.abs(score) / 4 * 100, 100);
-  return { action, confidence, reason: `Fallback: RSI=${rsi}, MACD=${macd}` };
+  return { signal, confidence, reason: `Technical: RSI=${rsi.toFixed(1)}, MACD=${macd.toFixed(3)}` };
+}
+
+// Exported for direct use by agent
+async function getAnalysis(market, price, indicators, email) {
+  try {
+    const response = await axios.post('http://localhost:5002/analyze', {
+      symbol: market.replace('/', ''),
+      email,
+      price,
+      indicators,
+    }, { timeout: 2500 });
+    return response.data; // expects { signal, confidence, reason }
+  } catch (error) {
+    console.warn('Python agent unavailable, using fallback');
+    return fallbackSignal(indicators);
+  }
 }
 
 router.post('/analyze', async (req, res) => {
@@ -21,25 +35,11 @@ router.post('/analyze', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   try {
-    // Try Python agent service (timeout 2.5s)
-    const response = await axios.post('http://localhost:5002/analyze', {
-      symbol: market.replace('/', ''),
-      email,
-      price,
-      indicators,
-    }, { timeout: 2500 });
-    // The Python service should return { signal, confidence, reason, breakdown }
-    return res.json(response.data);
+    const result = await getAnalysis(market, price, indicators, email);
+    res.json(result);
   } catch (error) {
-    console.warn('Python agent service unavailable, using fallback');
-    const fallback = fallbackSignal(indicators);
-    return res.json({
-      signal: fallback.action,
-      confidence: fallback.confidence,
-      reason: fallback.reason,
-      breakdown: { fallback }
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-module.exports = router;
+module.exports = { router, getAnalysis };
