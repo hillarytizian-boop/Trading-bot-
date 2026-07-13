@@ -333,6 +333,16 @@ export default function HilaBotMiniApp() {
   }, []);
 
   const handleBinanceConnect = async (email) => {
+  const handlePaperToggle = async (value) => {
+    setPaperMode(value);
+    try {
+      await fetch("/api/user/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }),
+      });
+    } catch (err) { console.error("Failed to save paper mode", err); }
+  };
     const statusRes = await fetch(`/api/binance/status?email=${encodeURIComponent(email)}`);
     const statusData = await statusRes.json();
     if (statusData.connected) {
@@ -344,7 +354,7 @@ export default function HilaBotMiniApp() {
   };
 
   const screens = {
-    signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
+    signals: <SignalsScreen binance={binance} onOpenSettings={( paperMode={paperMode} ) => setSettingsOpen(true)} />,
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
