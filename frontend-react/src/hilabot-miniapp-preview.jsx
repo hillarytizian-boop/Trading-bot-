@@ -469,4 +469,3 @@ export default function HilaBotMiniApp() {
     </div>
   );
 }
-export default HilaBotMiniApp;
