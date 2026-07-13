@@ -166,8 +166,8 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
 }
 
 // ─── SIGNALS SCREEN ──────────────────────────────────────────────
-function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode }) {
-  const [messages, setMessages] = useState([]);
+// Now receives messages state from parent
+function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode, messages, setMessages }) {
   const [price, setPrice] = useState(null);
   const [priceHistory, setPriceHistory] = useState([]);
   const [signalHistory, setSignalHistory] = useState([]);
@@ -177,6 +177,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   const [paperBalance, setPaperBalance] = useState(null);
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
+  const agentStatusRef = useRef(null);
 
   // ─── WebSocket for selected symbol ──────────────────────────────
   useEffect(() => {
@@ -202,7 +203,17 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     const interval = setInterval(() => {
       fetch('/api/agent/status')
         .then(r => r.json())
-        .then(data => { if (data.paperBalance !== undefined) setPaperBalance(data.paperBalance); })
+        .then(data => {
+          if (data.paperBalance !== undefined) setPaperBalance(data.paperBalance);
+          // Also show agent running status
+          if (data.running && !agentStatusRef.current) {
+            setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '🤖 Agent is running' }]);
+            agentStatusRef.current = true;
+          } else if (!data.running && agentStatusRef.current) {
+            setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏹ Agent stopped' }]);
+            agentStatusRef.current = false;
+          }
+        })
         .catch(() => {});
     }, 5000);
     return () => clearInterval(interval);
@@ -252,7 +263,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         reason: data.reason,
       }]);
       setSignalHistory(prev => { const u = [...prev, { signal: data.signal, confidence: data.confidence, price: currentPrice, time: new Date().toISOString() }]; return u.slice(-30); });
-    } catch (e) {}
+    } catch (e) { console.error('Analysis error:', e); }
     setAnalyzing(false);
   };
 
@@ -359,14 +370,12 @@ function StatChip({ label, value, color, dot }) {
   );
 }
 
-// ─── TRADES, HISTORY, PROFILE, ADMIN, BACKTEST ──────────────────
-// (These are kept minimal – they import existing components)
+// ─── TRADES, HISTORY, PROFILE, ADMIN ──────────────────────────
+// These are placeholders – they will be replaced with real components later.
 function TradesScreen() { return <div style={{ padding: 16, color: MUTED }}>Trades (real data from Supabase)</div>; }
 function HistoryScreen() { return <div style={{ padding: 16, color: MUTED }}>History (real data from Supabase)</div>; }
 function ProfileScreen({ user, binance, onOpenSettings }) { return <div style={{ padding: 16, color: MUTED }}>Profile</div>; }
 function AdminScreen() { return <div style={{ padding: 16, color: MUTED }}>Admin</div>; }
-// Actually we need to use the real components we created earlier. But to keep this file short, we'll just import them.
-// Since we already have Dashboard and Backtest imported, we can use them.
 
 // ─── BOTTOM NAV ────────────────────────────────────────────────────
 function BottomNav({ tab, setTab, isAdmin }) {
@@ -398,6 +407,7 @@ export default function HilaBotMiniApp() {
   const [binance, setBinance] = useState({ connected: false, balance: "0.00" });
   const [selectedSymbol, setSelectedSymbol] = useState("BTC/USDT");
   const [paperMode, setPaperMode] = useState(false);
+  const [messages, setMessages] = useState([]); // lifted up
   const isAdmin = CURRENT_USER.role === "admin";
 
   // Fetch saved settings
@@ -450,13 +460,13 @@ export default function HilaBotMiniApp() {
   };
 
   const screens = {
-    signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} />,
+    signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} messages={messages} setMessages={setMessages} />,
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
     profile: <ProfileScreen user={CURRENT_USER} binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
     backtest: <Backtest />,
-    admin: isAdmin ? <AdminScreen /> : <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} />,
+    admin: isAdmin ? <AdminScreen /> : <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} messages={messages} setMessages={setMessages} />,
   };
 
   return (
