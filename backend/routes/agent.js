@@ -13,6 +13,8 @@ let agentState = {
   tradeOpenTime: null,
   paperBalance: 1000,
   priceHistory: [],
+  lastSignal: null,
+  lastTradeAttempt: null,
 };
 
 async function getSettings(email) {
@@ -143,6 +145,7 @@ async function agentLoop(email) {
     agentState.priceHistory.push(price);
     if (agentState.priceHistory.length > 50) agentState.priceHistory.shift();
 
+    // Check open trade
     const activeTrade = await getActiveTrade(email);
     if (activeTrade) {
       const entry = activeTrade.entry_price;
@@ -177,18 +180,32 @@ async function agentLoop(email) {
     const macd = prices.length >= 26 ? computeMACD(prices) : 0;
     const ema = prices.length > 0 ? prices[prices.length-1] * 0.99 : price;
 
-    // Call AI analysis directly
+    // Call AI analysis
     const signal = await getAnalysis(symbol, price, { rsi, ema, macd }, email);
+    agentState.lastSignal = signal;
 
-    if (signal.signal === 'HOLD' || signal.confidence < 60) return;
-    if (agentState.tradesToday >= settings.maxTradesPerDay) return;
+    console.log(`[${new Date().toISOString()}] AI signal: ${signal.signal} (conf: ${signal.confidence})`);
+
+    if (signal.signal === 'HOLD' || signal.confidence < 60) {
+      agentState.lastTradeAttempt = 'HOLD or low confidence';
+      return;
+    }
+    if (agentState.tradesToday >= settings.maxTradesPerDay) {
+      agentState.lastTradeAttempt = 'Max trades per day';
+      return;
+    }
     if (agentState.dailyLoss >= settings.maxDailyLoss) {
       agentState.running = false;
+      agentState.lastTradeAttempt = 'Daily loss limit reached';
       return;
     }
 
+    // Execute trade
     const balance = isPaper ? agentState.paperBalance : 1000;
-    if (balance < 10) return;
+    if (balance < 10) {
+      agentState.lastTradeAttempt = 'Balance too low';
+      return;
+    }
     const riskPerTrade = 0.02;
     const amount = balance * riskPerTrade;
     const quantity = amount / price;
@@ -224,10 +241,12 @@ async function agentLoop(email) {
     agentState.activeTradeId = tradeId;
     agentState.tradeOpenTime = Date.now();
     agentState.tradesToday++;
+    agentState.lastTradeAttempt = `Trade executed: ${signal.signal} at ${price}`;
 
     console.log(`📄 PAPER TRADE: ${signal.signal} ${symbol} at ${price} (balance: $${agentState.paperBalance.toFixed(2)})`);
   } catch (error) {
     console.error('Agent loop error:', error);
+    agentState.lastTradeAttempt = 'Error: ' + error.message;
   }
 }
 
@@ -241,11 +260,13 @@ router.post('/start', async (req, res) => {
   agentState.dailyLoss = 0;
   agentState.totalPnL = 0;
   agentState.priceHistory = [];
+  agentState.lastSignal = null;
+  agentState.lastTradeAttempt = null;
 
   const user = await supabase.from('users').select('paper_balance').eq('email', email).single();
   if (user.data) agentState.paperBalance = user.data.paper_balance || 1000;
 
-  agentState.intervalId = setInterval(() => agentLoop(email), 60000);
+  agentState.intervalId = setInterval(() => agentLoop(email), 10000); // 10 seconds
   agentState.running = true;
   res.json({ status: 'started' });
 });
@@ -264,6 +285,8 @@ router.get('/status', async (req, res) => {
     totalPnL: agentState.totalPnL,
     activeTradeId: agentState.activeTradeId,
     paperBalance: agentState.paperBalance,
+    lastSignal: agentState.lastSignal,
+    lastTradeAttempt: agentState.lastTradeAttempt,
   });
 });
 
