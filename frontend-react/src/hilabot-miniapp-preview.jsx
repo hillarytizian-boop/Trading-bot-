@@ -346,16 +346,6 @@ export default function HilaBotMiniApp() {
       });
     } catch (err) { console.error("Failed to save paper mode", err); }
   };
-  const handlePaperToggle = async (value) => {
-    setPaperMode(value);
-    try {
-      await fetch("/api/user/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }),
-      });
-    } catch (err) { console.error("Failed to save paper mode", err); }
-  };
     const statusRes = await fetch(`/api/binance/status?email=${encodeURIComponent(email)}`);
     const statusData = await statusRes.json();
     if (statusData.connected) {
