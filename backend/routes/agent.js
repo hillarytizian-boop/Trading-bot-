@@ -20,17 +20,22 @@ let agentState = {
 async function getSettings(email) {
   const { data, error } = await supabase
     .from('users')
-    .select('bot_settings, paper_balance')
+    .select('bot_settings, paper_balance, binance_api_key')
     .eq('email', email)
     .single();
   if (data?.paper_balance !== undefined) agentState.paperBalance = data.paper_balance;
-  return data?.bot_settings || {
-    maxDailyLoss: 10,
-    maxTradesPerDay: 30,
-    market: 'BTCUSDT',
-    stopLossPercent: 2,
-    takeProfitPercent: 5,
-    paperMode: false,
+  
+  // Force paper mode if no Binance API key
+  const hasBinance = !!data?.binance_api_key;
+  const paperMode = true; // force paper mode for testing
+  
+  return {
+    maxDailyLoss: data?.bot_settings?.maxDailyLoss || 10,
+    maxTradesPerDay: data?.bot_settings?.maxTradesPerDay || 30,
+    market: data?.bot_settings?.market || 'BTCUSDT',
+    stopLossPercent: data?.bot_settings?.stopLossPercent || 2,
+    takeProfitPercent: data?.bot_settings?.takeProfitPercent || 5,
+    paperMode: paperMode,
   };
 }
 
@@ -130,17 +135,26 @@ function computeMACD(prices, fast = 12, slow = 26) {
 }
 
 async function agentLoop(email) {
-  if (!agentState.running) return;
+  if (!agentState.running) {
+    console.log('[Agent] Not running, skipping loop');
+    return;
+  }
+
+  console.log(`[Agent] Loop started for ${email}`);
 
   try {
     const settings = await getSettings(email);
     const symbol = settings.market || 'BTCUSDT';
-    const isPaper = settings.paperMode || false;
+    const isPaper = settings.paperMode;
 
     const priceRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
     const priceData = await priceRes.json();
     const price = parseFloat(priceData.price);
-    if (!price) return;
+    if (!price) {
+      console.log('[Agent] Price unavailable, skipping');
+      return;
+    }
+    console.log(`[Agent] Current price: ${price}`);
 
     agentState.priceHistory.push(price);
     if (agentState.priceHistory.length > 50) agentState.priceHistory.shift();
@@ -148,6 +162,7 @@ async function agentLoop(email) {
     // Check open trade
     const activeTrade = await getActiveTrade(email);
     if (activeTrade) {
+      console.log('[Agent] Open trade exists, monitoring...');
       const entry = activeTrade.entry_price;
       const sl = activeTrade.stop_loss;
       const tp = activeTrade.take_profit;
@@ -180,32 +195,46 @@ async function agentLoop(email) {
     const macd = prices.length >= 26 ? computeMACD(prices) : 0;
     const ema = prices.length > 0 ? prices[prices.length-1] * 0.99 : price;
 
+    console.log(`[Agent] Indicators: RSI=${rsi.toFixed(1)}, MACD=${macd.toFixed(3)}, EMA=${ema.toFixed(2)}`);
+
     // Call AI analysis
     const signal = await getAnalysis(symbol, price, { rsi, ema, macd }, email);
     agentState.lastSignal = signal;
 
-    console.log(`[${new Date().toISOString()}] AI signal: ${signal.signal} (conf: ${signal.confidence})`);
+    console.log(`[Agent] AI signal: ${signal.signal} (conf: ${signal.confidence})`);
 
-    if (signal.signal === 'HOLD' || signal.confidence < 60) {
-      agentState.lastTradeAttempt = 'HOLD or low confidence';
+    // Log why it might skip
+    if (signal.signal === 'HOLD') {
+      console.log('[Agent] Signal is HOLD, skipping');
+      agentState.lastTradeAttempt = 'HOLD signal';
+      return;
+    }
+    if (signal.confidence < 65) {
+      console.log(`[Agent] Confidence ${signal.confidence} < 65, skipping`);
+      agentState.lastTradeAttempt = `Confidence ${signal.confidence} < 65`;
       return;
     }
     if (agentState.tradesToday >= settings.maxTradesPerDay) {
+      console.log('[Agent] Max trades reached');
       agentState.lastTradeAttempt = 'Max trades per day';
       return;
     }
     if (agentState.dailyLoss >= settings.maxDailyLoss) {
+      console.log('[Agent] Daily loss limit reached');
       agentState.running = false;
-      agentState.lastTradeAttempt = 'Daily loss limit reached';
+      agentState.lastTradeAttempt = 'Daily loss limit';
       return;
     }
 
     // Execute trade
     const balance = isPaper ? agentState.paperBalance : 1000;
     if (balance < 10) {
+      console.log('[Agent] Balance too low');
       agentState.lastTradeAttempt = 'Balance too low';
       return;
     }
+    console.log(`[Agent] Balance: ${balance}, isPaper: ${isPaper}`);
+
     const riskPerTrade = 0.02;
     const amount = balance * riskPerTrade;
     const quantity = amount / price;
@@ -220,6 +249,8 @@ async function agentLoop(email) {
       stopLoss = price * (1 + slPercent / 100);
       takeProfit = price * (1 - tpPercent / 100);
     }
+
+    console.log(`[Agent] Executing ${signal.signal} at ${price}, SL: ${stopLoss}, TP: ${takeProfit}`);
 
     const tradeId = uuidv4();
     await logTrade(email, {
@@ -241,15 +272,28 @@ async function agentLoop(email) {
     agentState.activeTradeId = tradeId;
     agentState.tradeOpenTime = Date.now();
     agentState.tradesToday++;
-    agentState.lastTradeAttempt = `Trade executed: ${signal.signal} at ${price}`;
+    agentState.lastTradeAttempt = `✅ Trade executed: ${signal.signal} at ${price}`;
 
     console.log(`📄 PAPER TRADE: ${signal.signal} ${symbol} at ${price} (balance: $${agentState.paperBalance.toFixed(2)})`);
   } catch (error) {
-    console.error('Agent loop error:', error);
+    console.error('[Agent] Loop error:', error);
     agentState.lastTradeAttempt = 'Error: ' + error.message;
   }
 }
 
+// ─── Manual trade trigger for debugging ───────────────────────────
+router.post('/debug-trade', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    await agentLoop(email);
+    res.json({ message: 'Agent loop triggered', state: agentState });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ─── Start / Stop / Status ──────────────────────────────────────────
 router.post('/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
@@ -263,10 +307,16 @@ router.post('/start', async (req, res) => {
   agentState.lastSignal = null;
   agentState.lastTradeAttempt = null;
 
-  const user = await supabase.from('users').select('paper_balance').eq('email', email).single();
-  if (user.data) agentState.paperBalance = user.data.paper_balance || 1000;
+  const user = await supabase.from('users').select('paper_balance, binance_api_key').eq('email', email).single();
+  if (user.data) {
+    agentState.paperBalance = user.data.paper_balance || 1000;
+    // Force paper mode if no Binance
+    if (!user.data.binance_api_key) {
+      await supabase.from('users').update({ bot_settings: { paperMode: true } }).eq('email', email);
+    }
+  }
 
-  agentState.intervalId = setInterval(() => agentLoop(email), 10000); // 10 seconds
+  agentState.intervalId = setInterval(() => agentLoop(email), 10000);
   agentState.running = true;
   res.json({ status: 'started' });
 });
