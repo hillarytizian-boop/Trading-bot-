@@ -43,6 +43,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
   const [autoCompound, setAutoCompound] = useState(true);
   const [notifications, setNotifications] = useState(true);
   const [autoStop, setAutoStop] = useState(true);
+  const [paperMode, setPaperMode] = useState(false);
   const isConnected = binance?.connected || false;
   const displayBalance = binance?.balance || '0.00';
 
@@ -133,6 +134,8 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email }) {
             <TgListRow icon="🔄" label="Auto-compounding" sub="Reinvest profits" right={<TgSwitch checked={autoCompound} onChange={setAutoCompound} />} />
             <TgListRow icon="🔔" label="Trade notifications" sub="Alert on trade" right={<TgSwitch checked={notifications} onChange={setNotifications} />} />
             <TgListRow icon="🛑" label="Auto stop loss" sub="Halt at daily loss" right={<TgSwitch checked={autoStop} onChange={setAutoStop} />} last />
+            <TgListRow icon="📄" label="Paper Trading" sub="Simulate trades with virtual money" right={<TgSwitch checked={paperMode} onChange={() => onPaperToggle(!paperMode)} />} />
+    <TgListRow icon="📄" label="Paper Trading" sub="Simulate trades with virtual money" right={<TgSwitch checked={paperMode} onChange={() => { setPaperMode(!paperMode); handlePaperToggle(!paperMode); }} />} />
           </div>
           <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>MARKET SELECTION</p>
           <div style={{ background: DARK_PANEL, margin: "0 14px 8px", borderRadius: 14, padding: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -333,6 +336,16 @@ export default function HilaBotMiniApp() {
   }, []);
 
   const handleBinanceConnect = async (email) => {
+  const handlePaperToggle = async (value) => {
+    setPaperMode(value);
+    try {
+      await fetch("/api/user/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }),
+      });
+    } catch (err) { console.error("Failed to save paper mode", err); }
+  };
   const handlePaperToggle = async (value) => {
     setPaperMode(value);
     try {
