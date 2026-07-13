@@ -3,7 +3,6 @@ const supabase = require('../db');
 const { analyze } = require('./ai');
 const { v4: uuidv4 } = require('uuid');
 
-// In-memory state (will be reset on server restart, but we persist paper balance in DB)
 let agentState = {
   running: false,
   intervalId: null,
@@ -13,6 +12,7 @@ let agentState = {
   activeTradeId: null,
   tradeOpenTime: null,
   paperBalance: 1000,
+  priceHistory: [], // stores last 50 close prices
 };
 
 async function getSettings(email) {
@@ -105,6 +105,30 @@ async function closeTrade(email, tradeId, exitPrice, reason, isPaper) {
   agentState.tradeOpenTime = null;
 }
 
+// ─── Compute RSI from price array ──────────────────────────────
+function computeRSI(prices, period = 14) {
+  if (prices.length < period + 1) return 50;
+  let gains = 0, losses = 0;
+  for (let i = 1; i < prices.length; i++) {
+    const diff = prices[i] - prices[i-1];
+    if (diff >= 0) gains += diff;
+    else losses += -diff;
+  }
+  const avgGain = gains / (prices.length - 1);
+  const avgLoss = losses / (prices.length - 1);
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+// ─── Compute MACD (simplified) ──────────────────────────────────
+function computeMACD(prices, fast = 12, slow = 26) {
+  if (prices.length < slow) return 0;
+  const emaFast = prices.slice(-fast).reduce((a,b) => a+b, 0) / Math.min(fast, prices.length);
+  const emaSlow = prices.slice(-slow).reduce((a,b) => a+b, 0) / Math.min(slow, prices.length);
+  return emaFast - emaSlow;
+}
+
 async function agentLoop(email) {
   if (!agentState.running) return;
 
@@ -113,16 +137,19 @@ async function agentLoop(email) {
     const symbol = settings.market || 'BTCUSDT';
     const isPaper = settings.paperMode || false;
 
-    // Get price – we can fetch from Binance public endpoint
+    // Fetch current price from Binance
     const priceRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
     const priceData = await priceRes.json();
     const price = parseFloat(priceData.price);
     if (!price) return;
 
-    // Check for open trade
+    // Update price history (keep last 50)
+    agentState.priceHistory.push(price);
+    if (agentState.priceHistory.length > 50) agentState.priceHistory.shift();
+
+    // Check open trade
     const activeTrade = await getActiveTrade(email);
     if (activeTrade) {
-      // Monitor SL/TP and time exit
       const entry = activeTrade.entry_price;
       const sl = activeTrade.stop_loss;
       const tp = activeTrade.take_profit;
@@ -149,13 +176,24 @@ async function agentLoop(email) {
       return;
     }
 
-    // No open trade – get AI signal
-    const indicators = { rsi: 50, ema: price * 0.99, macd: 0.01 };
-    // We need to call the analyze endpoint (which may call Python agent)
+    // No open trade – get AI signal with real indicators
+    const prices = agentState.priceHistory;
+    let rsi = 50, macd = 0;
+    if (prices.length >= 20) {
+      rsi = computeRSI(prices);
+      macd = computeMACD(prices);
+    }
+
+    // Call AI endpoint with real indicators
     const aiRes = await fetch('http://localhost:10000/api/ai/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ market: symbol, price, indicators, email }),
+      body: JSON.stringify({
+        market: symbol,
+        price,
+        indicators: { rsi, ema: prices[prices.length-1] || price, macd },
+        email,
+      }),
     });
     const signal = await aiRes.json();
 
@@ -167,13 +205,12 @@ async function agentLoop(email) {
     }
 
     // Position sizing
-    const balance = isPaper ? agentState.paperBalance : 1000; // real balance would come from Binance
+    const balance = isPaper ? agentState.paperBalance : 1000;
     if (balance < 10) return;
     const riskPerTrade = 0.02;
     const amount = balance * riskPerTrade;
     const quantity = amount / price;
 
-    // Set SL/TP
     const slPercent = settings.stopLossPercent || 2;
     const tpPercent = settings.takeProfitPercent || 5;
     let stopLoss, takeProfit;
@@ -206,8 +243,6 @@ async function agentLoop(email) {
     agentState.tradeOpenTime = Date.now();
     agentState.tradesToday++;
 
-    // Update paper balance (deduct the amount – will be added back on close)
-    // For paper, we don't deduct immediately; we only update on close.
     console.log(`📄 PAPER TRADE: ${signal.signal} ${symbol} at ${price} (balance: $${agentState.paperBalance.toFixed(2)})`);
   } catch (error) {
     console.error('Agent loop error:', error);
@@ -220,12 +255,11 @@ router.post('/start', async (req, res) => {
 
   if (agentState.running) return res.json({ status: 'already running' });
 
-  // Reset daily counters
   agentState.tradesToday = 0;
   agentState.dailyLoss = 0;
   agentState.totalPnL = 0;
+  agentState.priceHistory = [];
 
-  // Fetch paper balance
   const user = await supabase.from('users').select('paper_balance').eq('email', email).single();
   if (user.data) agentState.paperBalance = user.data.paper_balance || 1000;
 
