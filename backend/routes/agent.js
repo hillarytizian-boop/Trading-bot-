@@ -18,8 +18,9 @@ let agentState = {
   tradeDuration: 120,
   lastAnalysis: null,
   priceHistory: [],
-  consecutiveLosses: 0,        // 1️⃣ drawdown recovery
-  activeSymbols: [],           // 4️⃣ correlation check
+  consecutiveLosses: 0,
+  activeSymbols: [],
+  paperBalance: 1000,
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -36,9 +37,10 @@ async function getBinanceClient(email) {
 async function getSettings(email) {
   const { data, error } = await supabase
     .from('users')
-    .select('bot_settings')
+    .select('bot_settings, paper_balance')
     .eq('email', email)
     .single();
+  if (data?.paper_balance !== undefined) agentState.paperBalance = data.paper_balance;
   return data?.bot_settings || {
     tradeAmount: 10,
     maxDailyLoss: 10,
@@ -48,7 +50,16 @@ async function getSettings(email) {
     autoCompound: false,
     stopLossPercent: 2,
     takeProfitPercent: 5,
+    paperMode: false,
   };
+}
+
+async function updatePaperBalance(email, newBalance) {
+  await supabase
+    .from('users')
+    .update({ paper_balance: newBalance })
+    .eq('email', email);
+  agentState.paperBalance = newBalance;
 }
 
 async function logTrade(email, trade) {
@@ -69,6 +80,7 @@ async function logTrade(email, trade) {
     duration: trade.duration,
     signal_confidence: trade.confidence,
     signal_reason: trade.reason,
+    is_paper: trade.isPaper || false,
   }]);
 }
 
@@ -92,7 +104,7 @@ async function getActiveTrade(email) {
   return data?.[0] || null;
 }
 
-async function closeTrade(email, tradeId, exitPrice, reason) {
+async function closeTrade(email, tradeId, exitPrice, reason, isPaper) {
   const { data, error } = await supabase
     .from('trades')
     .select('*')
@@ -115,88 +127,58 @@ async function closeTrade(email, tradeId, exitPrice, reason) {
     })
     .eq('id', tradeId);
 
-  // 1️⃣ Drawdown recovery
-  if (pnl < 0) agentState.consecutiveLosses++;
-  else agentState.consecutiveLosses = 0;
+  if (isPaper) {
+    const newBalance = agentState.paperBalance + pnl;
+    await updatePaperBalance(email, newBalance);
+  }
 
-  if (pnl < 0) agentState.dailyLoss += Math.abs(pnl);
+  if (pnl < 0) {
+    agentState.consecutiveLosses++;
+    agentState.dailyLoss += Math.abs(pnl);
+  } else {
+    agentState.consecutiveLosses = 0;
+  }
   agentState.totalPnL += pnl;
   agentState.activeTradeId = null;
   agentState.tradeOpenTime = null;
 }
 
-// 4️⃣ Correlation check
-async function getCorrelation(symbol1, symbol2) {
-  // Simplified: if symbols share the same base asset (BTC, ETH), treat as highly correlated
-  const base1 = symbol1.replace(/USDT$/, '');
-  const base2 = symbol2.replace(/USDT$/, '');
-  if (base1 === base2) return 0.9;
-  // Otherwise, default to low correlation (0.2)
-  return 0.2;
-}
-
-// 3️⃣ Trend filter – get EMA50
-async function getEMA50(client, symbol) {
-  try {
-    const klines = await client.klines({ symbol, interval: '1h', limit: 50 });
-    const closes = klines.map(k => parseFloat(k.close));
-    const ema = closes.reduce((a, b) => a + b, 0) / closes.length;
-    return ema;
-  } catch {
-    return null;
-  }
-}
-
-// 2️⃣ AI‑driven exit – evaluate if we should close the trade based on market conditions
-async function shouldExitTrade(client, symbol, price, activeTrade) {
-  const entry = activeTrade.entry_price;
-  const side = activeTrade.type;
-  const currentPnl = side === 'BUY' ? (price - entry) / entry : (entry - price) / entry;
-
-  // If already at stop-loss or take‑profit, let those handle it
-  if (currentPnl <= -0.02) return { exit: true, reason: 'STOP_LOSS' };
-  if (currentPnl >= 0.05) return { exit: true, reason: 'TAKE_PROFIT' };
-
-  // AI‑driven: get a fresh signal just for exit
-  const indicators = { rsi: 50, ema: price * 0.99, macd: 0.01 };
-  const signal = await analyze({ market: symbol, price, indicators });
-
-  // If AI now says opposite direction, exit
-  if (side === 'BUY' && signal.signal === 'SELL' && signal.confidence > 60) {
-    return { exit: true, reason: 'AI_EXIT_SELL' };
-  }
-  if (side === 'SELL' && signal.signal === 'BUY' && signal.confidence > 60) {
-    return { exit: true, reason: 'AI_EXIT_BUY' };
+// ─── Paper trading: simulate entry ──────────────────────────────
+async function executePaperTrade(email, symbol, side, price, quantity, settings, signal) {
+  const slPercent = settings.stopLossPercent || 2;
+  const tpPercent = settings.takeProfitPercent || 5;
+  let stopLoss, takeProfit;
+  if (side === 'buy') {
+    stopLoss = price * (1 - slPercent / 100);
+    takeProfit = price * (1 + tpPercent / 100);
+  } else {
+    stopLoss = price * (1 + slPercent / 100);
+    takeProfit = price * (1 - tpPercent / 100);
   }
 
-  // Time‑based fallback (if AI is unsure)
-  const openedAt = new Date(activeTrade.opened_at);
-  const elapsedSeconds = (new Date() - openedAt) / 1000;
-  if (elapsedSeconds > 600) { // max 10 minutes
-    return { exit: true, reason: 'TIME_EXIT' };
-  }
+  const tradeId = uuidv4();
+  await logTrade(email, {
+    id: tradeId,
+    symbol,
+    type: signal.signal,
+    entryPrice: price,
+    quantity,
+    stopLoss,
+    takeProfit,
+    duration: signal.duration || 120,
+    confidence: signal.confidence,
+    reason: signal.reason,
+    status: 'open',
+    openedAt: new Date().toISOString(),
+    isPaper: true,
+  });
 
-  return { exit: false };
-}
+  agentState.activeTradeId = tradeId;
+  agentState.tradeOpenTime = Date.now();
+  agentState.tradeDuration = signal.duration || 120;
+  agentState.tradesToday++;
 
-// ─── Risk‑of‑ruin calculator ─────────────────────────────────────
-function riskOfRuin(winRate, riskPerTrade) {
-  const lossRate = 1 - winRate;
-  if (winRate === 0 || lossRate === 0) return 1;
-  const r = lossRate / winRate;
-  return Math.pow(r, 0.5 / riskPerTrade);
-}
-
-// ─── Volatility ──────────────────────────────────────────────────
-function calculateVolatility(prices) {
-  if (prices.length < 10) return 0.02;
-  const returns = [];
-  for (let i = 1; i < prices.length; i++) {
-    returns.push((prices[i] - prices[i-1]) / prices[i-1]);
-  }
-  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / returns.length;
-  return Math.sqrt(variance);
+  console.log(`📄 PAPER TRADE: ${signal.signal} ${symbol} at ${price} (balance: $${agentState.paperBalance.toFixed(2)})`);
 }
 
 // ─── Core agent loop ──────────────────────────────────────────────
@@ -204,191 +186,177 @@ async function agentLoop(email) {
   if (!agentState.running) return;
 
   try {
-    const client = await getBinanceClient(email);
     const settings = await getSettings(email);
     const symbol = settings.market || 'BTCUSDT';
+    const isPaper = settings.paperMode || false;
 
-    // 1. Fetch price
-    const ticker = await client.prices({ symbol });
-    const price = parseFloat(ticker[symbol]);
+    // Get price – either from Binance (real) or public feed for paper
+    let price;
+    let client;
+    try {
+      client = await getBinanceClient(email);
+      const ticker = await client.prices({ symbol });
+      price = parseFloat(ticker[symbol]);
+    } catch (err) {
+      if (isPaper) {
+        // Fallback to public Binance endpoint
+        const fallback = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+        const data = await fallback.json();
+        price = parseFloat(data.price);
+      } else {
+        throw err;
+      }
+    }
+
+    if (!price) return;
+
     agentState.priceHistory.push(price);
     if (agentState.priceHistory.length > 30) agentState.priceHistory.shift();
 
-    // 2. Volatility
-    const volatility = calculateVolatility(agentState.priceHistory);
+    // Check open trade
+    const activeTrade = await getActiveTrade(email);
+    if (activeTrade) {
+      const entry = activeTrade.entry_price;
+      const sl = activeTrade.stop_loss;
+      const tp = activeTrade.take_profit;
+      const openedAt = new Date(activeTrade.opened_at);
+      const elapsedSeconds = (new Date() - openedAt) / 1000;
+      const duration = activeTrade.duration || 120;
 
-    // 3. AI analysis
+      let closed = false;
+
+      // Trailing stop
+      let newSL = sl;
+      if (activeTrade.type === 'BUY') {
+        if (price > entry * 1.02) newSL = Math.max(sl, entry * 1.01);
+        if (price > entry * 1.05) newSL = Math.max(newSL, entry * 1.03);
+        if (price <= sl) { await closeTrade(email, activeTrade.id, price, 'STOP_LOSS', isPaper); closed = true; }
+        else if (price >= tp) { await closeTrade(email, activeTrade.id, price, 'TAKE_PROFIT', isPaper); closed = true; }
+      } else {
+        if (price < entry * 0.98) newSL = Math.min(sl, entry * 0.99);
+        if (price < entry * 0.95) newSL = Math.min(newSL, entry * 0.97);
+        if (price >= sl) { await closeTrade(email, activeTrade.id, price, 'STOP_LOSS', isPaper); closed = true; }
+        else if (price <= tp) { await closeTrade(email, activeTrade.id, price, 'TAKE_PROFIT', isPaper); closed = true; }
+      }
+
+      if (newSL !== sl && !closed) {
+        await updateTrade(email, activeTrade.id, { stop_loss: newSL });
+      }
+
+      if (!closed && elapsedSeconds >= duration) {
+        await closeTrade(email, activeTrade.id, price, 'TIME_EXIT', isPaper);
+        closed = true;
+      }
+
+      if (closed) {
+        agentState.activeTradeId = null;
+        agentState.tradeOpenTime = null;
+        if (isPaper) {
+          // Refresh paper balance from DB
+          const user = await supabase
+            .from('users')
+            .select('paper_balance')
+            .eq('email', email)
+            .single();
+          if (user.data) agentState.paperBalance = user.data.paper_balance;
+        }
+      }
+      return;
+    }
+
+    // No open trade – get signal
     const indicators = { rsi: 50, ema: price * 0.99, macd: 0.01 };
     const signal = await analyze({ market: symbol, price, indicators });
     agentState.lastSignal = signal;
-    agentState.lastAnalysis = new Date().toISOString();
 
-    agentState.signalHistory.push({ ...signal, price, time: new Date().toISOString() });
-    if (agentState.signalHistory.length > 10) agentState.signalHistory.shift();
-
-    console.log(`[${new Date().toISOString()}] Analysis: ${signal.signal} | Conf: ${signal.confidence}% | Vol: ${(volatility * 100).toFixed(2)}%`);
-
-    // ─── Check open trade ──────────────────────────────────────
-    const activeTrade = await getActiveTrade(email);
-    if (activeTrade) {
-      // 2️⃣ AI‑driven exit
-      const exitDecision = await shouldExitTrade(client, symbol, price, activeTrade);
-      if (exitDecision.exit) {
-        await closeTrade(email, activeTrade.id, price, exitDecision.reason);
-        console.log(`[${new Date().toISOString()}] Trade closed: ${exitDecision.reason}`);
-        agentState.activeTradeId = null;
-        return;
-      }
-
-      // 4️⃣ Correlation check – if a second correlated asset is open, skip
-      if (agentState.activeSymbols.length > 0) {
-        for (const sym of agentState.activeSymbols) {
-          const corr = await getCorrelation(symbol, sym);
-          if (corr > 0.7) {
-            console.log(`[${new Date().toISOString()}] Skipping – correlated asset ${sym} already open.`);
-            return;
-          }
-        }
-      }
-
-      // Trailing stop‑loss (keep existing logic)
-      let newSL = activeTrade.stop_loss;
-      if (activeTrade.type === 'BUY') {
-        if (price > activeTrade.entry_price * 1.02) {
-          newSL = Math.max(activeTrade.stop_loss, activeTrade.entry_price * 1.01);
-        }
-        if (price > activeTrade.entry_price * 1.05) {
-          newSL = Math.max(newSL, activeTrade.entry_price * 1.03);
-        }
-      } else {
-        if (price < activeTrade.entry_price * 0.98) {
-          newSL = Math.min(activeTrade.stop_loss, activeTrade.entry_price * 0.99);
-        }
-        if (price < activeTrade.entry_price * 0.95) {
-          newSL = Math.min(newSL, activeTrade.entry_price * 0.97);
-        }
-      }
-      if (newSL !== activeTrade.stop_loss) {
-        await updateTrade(email, activeTrade.id, { stop_loss: newSL });
-        console.log(`[${new Date().toISOString()}] Trailing SL updated to ${newSL}`);
-      }
-      return;
-    }
-
-    // ─── No open trade – decide to enter ──────────────────────
-
-    // 5️⃣ Risk‑of‑ruin check
-    const estimatedWinRate = 0.65; // based on historical performance
-    let riskPerTrade = 0.02;
-    if (signal.confidence >= 90) riskPerTrade = 0.04;
-    else if (signal.confidence >= 80) riskPerTrade = 0.03;
-
-    const ror = riskOfRuin(estimatedWinRate, riskPerTrade);
-    if (ror > 0.1) {
-      riskPerTrade *= 0.5;
-      console.log(`[${new Date().toISOString()}] Risk-of-ruin too high (${(ror * 100).toFixed(1)}%) – reducing risk to ${(riskPerTrade * 100).toFixed(1)}%`);
-    }
-
-    // 1️⃣ Drawdown recovery
-    let riskMultiplier = 1;
-    if (agentState.consecutiveLosses >= 3) riskMultiplier = 0.5;
-    if (agentState.consecutiveLosses >= 5) riskMultiplier = 0.25;
-    riskPerTrade *= riskMultiplier;
-
-    if (agentState.consecutiveLosses >= 3) {
-      console.log(`[${new Date().toISOString()}] ${agentState.consecutiveLosses} consecutive losses – risk reduced to ${(riskPerTrade * 100).toFixed(1)}%`);
-    }
-
-    // 3️⃣ Trend filter
-    const ema50 = await getEMA50(client, symbol);
-    if (ema50) {
-      if (signal.signal === 'BUY' && price < ema50 * 1.01) {
-        console.log(`[${new Date().toISOString()}] Trend filter: price below EMA50 – no BUY`);
-        return;
-      }
-      if (signal.signal === 'SELL' && price > ema50 * 0.99) {
-        console.log(`[${new Date().toISOString()}] Trend filter: price above EMA50 – no SELL`);
-        return;
-      }
-    }
-
-    // Volatility adjustment
-    if (volatility > 0.03) riskPerTrade *= 0.5;
-    if (volatility > 0.05) riskPerTrade *= 0.3;
-
-    if (signal.signal === 'HOLD' || signal.confidence < 70) {
-      console.log(`[${new Date().toISOString()}] Signal ${signal.signal} (${signal.confidence}%) – waiting.`);
-      return;
-    }
-
-    if (agentState.tradesToday >= settings.maxTradesPerDay) {
-      console.log(`[${new Date().toISOString()}] Max trades reached.`);
-      return;
-    }
-
+    if (signal.signal === 'HOLD' || signal.confidence < 70) return;
+    if (agentState.tradesToday >= settings.maxTradesPerDay) return;
     if (agentState.dailyLoss >= settings.maxDailyLoss) {
-      console.log(`[${new Date().toISOString()}] Daily loss limit reached. Stopping.`);
       agentState.running = false;
       return;
     }
 
-    // ─── Enter trade ──────────────────────────────────────────
-    const account = await client.accountInfo();
-    const usdtBalance = account.balances.find(b => b.asset === 'USDT');
-    const balance = parseFloat(usdtBalance?.free || 0);
-    if (agentState.startingBalance === 0) agentState.startingBalance = balance;
+    // Determine balance to use
+    let balance;
+    if (isPaper) {
+      balance = agentState.paperBalance;
+      if (balance < 10) {
+        console.log('Paper balance too low');
+        return;
+      }
+    } else {
+      const account = await client.accountInfo();
+      const usdtBalance = account.balances.find(b => b.asset === 'USDT');
+      balance = parseFloat(usdtBalance?.free || 0);
+      if (balance < 10) return;
+    }
+
+    let riskPerTrade = 0.02;
+    if (signal.confidence >= 90) riskPerTrade = 0.04;
+    else if (signal.confidence >= 80) riskPerTrade = 0.03;
+
+    // Volatility adjustment
+    const volatility = agentState.priceHistory.length > 10
+      ? (() => {
+          const prices = agentState.priceHistory;
+          const returns = [];
+          for (let i = 1; i < prices.length; i++) {
+            returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+          }
+          const mean = returns.reduce((a,b) => a+b, 0) / returns.length;
+          const variance = returns.reduce((a,b) => a + (b - mean) ** 2, 0) / returns.length;
+          return Math.sqrt(variance);
+        })()
+      : 0.02;
+    if (volatility > 0.03) riskPerTrade *= 0.5;
+    if (volatility > 0.05) riskPerTrade *= 0.3;
 
     const amount = balance * riskPerTrade;
-    if (amount < 10) {
-      console.log(`[${new Date().toISOString()}] Insufficient balance.`);
-      return;
-    }
-
-    const side = signal.signal.toLowerCase();
     const quantity = amount / price;
-    const order = await client.order({
-      symbol,
-      side: side,
-      type: 'MARKET',
-      quantity: quantity,
-    });
+    const side = signal.signal.toLowerCase();
 
-    const slPercent = settings.stopLossPercent || 2;
-    const tpPercent = settings.takeProfitPercent || 5;
-    let stopLoss, takeProfit;
-    if (side === 'buy') {
-      stopLoss = price * (1 - slPercent / 100);
-      takeProfit = price * (1 + tpPercent / 100);
+    if (isPaper) {
+      await executePaperTrade(email, symbol, side, price, quantity, settings, signal);
     } else {
-      stopLoss = price * (1 + slPercent / 100);
-      takeProfit = price * (1 - tpPercent / 100);
+      const order = await client.order({
+        symbol,
+        side: side,
+        type: 'MARKET',
+        quantity: quantity,
+      });
+      // Log real trade
+      const slPercent = settings.stopLossPercent || 2;
+      const tpPercent = settings.takeProfitPercent || 5;
+      let stopLoss, takeProfit;
+      if (side === 'buy') {
+        stopLoss = price * (1 - slPercent / 100);
+        takeProfit = price * (1 + tpPercent / 100);
+      } else {
+        stopLoss = price * (1 + slPercent / 100);
+        takeProfit = price * (1 - tpPercent / 100);
+      }
+      const tradeId = uuidv4();
+      await logTrade(email, {
+        id: tradeId,
+        symbol,
+        type: signal.signal,
+        entryPrice: price,
+        quantity,
+        stopLoss,
+        takeProfit,
+        duration: signal.duration || 120,
+        confidence: signal.confidence,
+        reason: signal.reason,
+        status: 'open',
+        openedAt: new Date().toISOString(),
+        isPaper: false,
+      });
+      agentState.activeTradeId = tradeId;
+      agentState.tradeOpenTime = Date.now();
+      agentState.tradeDuration = signal.duration || 120;
+      agentState.tradesToday++;
+      console.log(`REAL TRADE: ${signal.signal} ${symbol} at ${price}`);
     }
-
-    const duration = signal.duration || 120;
-    const tradeId = uuidv4();
-    await logTrade(email, {
-      id: tradeId,
-      symbol,
-      type: signal.signal,
-      entryPrice: price,
-      quantity,
-      stopLoss,
-      takeProfit,
-      duration,
-      confidence: signal.confidence,
-      reason: signal.reason,
-      status: 'open',
-      openedAt: new Date().toISOString(),
-    });
-
-    agentState.activeTradeId = tradeId;
-    agentState.tradeOpenTime = Date.now();
-    agentState.tradeDuration = duration;
-    agentState.tradesToday++;
-    agentState.activeSymbols.push(symbol);
-
-    console.log(`[${new Date().toISOString()}] ✅ TRADE: ${signal.signal} ${symbol} at ${price}`);
-    console.log(`   SL: ${stopLoss} | TP: ${takeProfit} | Risk: ${(riskPerTrade * 100).toFixed(1)}% | Consecutive losses: ${agentState.consecutiveLosses}`);
   } catch (error) {
     console.error('Agent loop error:', error);
   }
@@ -399,19 +367,23 @@ router.post('/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  try { await getBinanceClient(email); }
-  catch { return res.status(400).json({ error: 'Binance not connected' }); }
-
   if (agentState.running) return res.json({ status: 'already running' });
 
+  // Reset daily counters
   agentState.tradesToday = 0;
   agentState.dailyLoss = 0;
   agentState.totalPnL = 0;
-  agentState.startingBalance = 0;
-  agentState.signalHistory = [];
-  agentState.priceHistory = [];
   agentState.consecutiveLosses = 0;
-  agentState.activeSymbols = [];
+  agentState.priceHistory = [];
+
+  // Fetch paper balance if exists
+  const user = await supabase
+    .from('users')
+    .select('paper_balance')
+    .eq('email', email)
+    .single();
+  if (user.data) agentState.paperBalance = user.data.paper_balance || 1000;
+
   agentState.intervalId = setInterval(() => agentLoop(email), 60000);
   agentState.running = true;
   res.json({ status: 'started' });
@@ -433,12 +405,10 @@ router.get('/status', async (req, res) => {
     totalPnL: agentState.totalPnL,
     startingBalance: agentState.startingBalance,
     activeTradeId: agentState.activeTradeId,
-    consecutiveLosses: agentState.consecutiveLosses,
-    activeSymbols: agentState.activeSymbols,
+    tradeDuration: agentState.tradeDuration,
     lastAnalysis: agentState.lastAnalysis,
-    volatility: agentState.priceHistory.length > 10
-      ? calculateVolatility(agentState.priceHistory)
-      : null,
+    consecutiveLosses: agentState.consecutiveLosses,
+    paperBalance: agentState.paperBalance,
   });
 });
 
