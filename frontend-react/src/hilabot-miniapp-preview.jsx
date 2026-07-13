@@ -166,18 +166,21 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
 }
 
 // ─── SIGNALS SCREEN ──────────────────────────────────────────────
-// Now receives messages state from parent
-function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode, messages, setMessages }) {
-  const [price, setPrice] = useState(null);
-  const [priceHistory, setPriceHistory] = useState([]);
-  const [signalHistory, setSignalHistory] = useState([]);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [currentSignal, setCurrentSignal] = useState({ signal: 'HOLD', confidence: 0, reason: 'Waiting...' });
-  const [tickCount, setTickCount] = useState(0);
-  const [paperBalance, setPaperBalance] = useState(null);
+function SignalsScreen({ 
+  binance, onOpenSettings, selectedSymbol, paperMode,
+  messages, setMessages,
+  price, setPrice,
+  priceHistory, setPriceHistory,
+  signalHistory, setSignalHistory,
+  tickCount, setTickCount,
+  currentSignal, setCurrentSignal,
+  paperBalance, setPaperBalance,
+  analyzing, setAnalyzing,
+  agentStatus, setAgentStatus,
+}) {
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
-  const agentStatusRef = useRef(null);
+  const agentStatusRef = useRef(agentStatus);
 
   // ─── WebSocket for selected symbol ──────────────────────────────
   useEffect(() => {
@@ -198,20 +201,18 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     return () => wsRef.current?.close();
   }, [selectedSymbol]);
 
-  // ─── Fetch paper balance ────────────────────────────────────────
+  // ─── Fetch paper balance & agent status ──────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
       fetch('/api/agent/status')
         .then(r => r.json())
         .then(data => {
           if (data.paperBalance !== undefined) setPaperBalance(data.paperBalance);
-          // Also show agent running status
-          if (data.running && !agentStatusRef.current) {
-            setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '🤖 Agent is running' }]);
-            agentStatusRef.current = true;
-          } else if (!data.running && agentStatusRef.current) {
-            setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏹ Agent stopped' }]);
-            agentStatusRef.current = false;
+          const running = data.running || false;
+          if (running !== agentStatusRef.current) {
+            agentStatusRef.current = running;
+            setAgentStatus(running);
+            setMessages(prev => [...prev, { type: 'bot', time: 'now', text: running ? '🤖 Agent is running' : '⏹ Agent stopped' }]);
           }
         })
         .catch(() => {});
@@ -303,7 +304,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: DARK_BG }}>
       <div style={{ flexShrink: 0, padding: "10px 14px", display: "flex", gap: 8, overflowX: "auto" }}>
-        <StatChip label="Bot" value="Active" color={GREEN} dot />
+        <StatChip label="Bot" value={agentStatus ? "Running" : "Stopped"} color={agentStatus ? GREEN : MUTED} dot={agentStatus} />
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
         {paperMode && paperBalance !== null && <StatChip label="Paper Balance" value={`$${paperBalance.toFixed(2)}`} color={GOLD} />}
         <StatChip label="Ticks" value={tickCount} color={TG_BLUE} />
@@ -371,7 +372,6 @@ function StatChip({ label, value, color, dot }) {
 }
 
 // ─── TRADES, HISTORY, PROFILE, ADMIN ──────────────────────────
-// These are placeholders – they will be replaced with real components later.
 function TradesScreen() { return <div style={{ padding: 16, color: MUTED }}>Trades (real data from Supabase)</div>; }
 function HistoryScreen() { return <div style={{ padding: 16, color: MUTED }}>History (real data from Supabase)</div>; }
 function ProfileScreen({ user, binance, onOpenSettings }) { return <div style={{ padding: 16, color: MUTED }}>Profile</div>; }
@@ -407,10 +407,45 @@ export default function HilaBotMiniApp() {
   const [binance, setBinance] = useState({ connected: false, balance: "0.00" });
   const [selectedSymbol, setSelectedSymbol] = useState("BTC/USDT");
   const [paperMode, setPaperMode] = useState(false);
-  const [messages, setMessages] = useState([]); // lifted up
   const isAdmin = CURRENT_USER.role === "admin";
 
-  // Fetch saved settings
+  // ─── Persistent state ────────────────────────────────────────────
+  const [messages, setMessages] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_messages')) || []; } catch { return []; }
+  });
+  const [price, setPrice] = useState(() => {
+    try { return parseFloat(localStorage.getItem('hila_price')) || null; } catch { return null; }
+  });
+  const [priceHistory, setPriceHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_priceHistory')) || []; } catch { return []; }
+  });
+  const [signalHistory, setSignalHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_signalHistory')) || []; } catch { return []; }
+  });
+  const [tickCount, setTickCount] = useState(() => {
+    try { return parseInt(localStorage.getItem('hila_tickCount')) || 0; } catch { return 0; }
+  });
+  const [currentSignal, setCurrentSignal] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_currentSignal')) || { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } catch { return { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; }
+  });
+  const [paperBalance, setPaperBalance] = useState(() => {
+    try { return parseFloat(localStorage.getItem('hila_paperBalance')) || null; } catch { return null; }
+  });
+  const [analyzing, setAnalyzing] = useState(false);
+  const [agentStatus, setAgentStatus] = useState(false);
+
+  // ─── Persist to localStorage whenever state changes ────────────
+  useEffect(() => {
+    localStorage.setItem('hila_messages', JSON.stringify(messages));
+    localStorage.setItem('hila_price', price !== null ? String(price) : '');
+    localStorage.setItem('hila_priceHistory', JSON.stringify(priceHistory));
+    localStorage.setItem('hila_signalHistory', JSON.stringify(signalHistory));
+    localStorage.setItem('hila_tickCount', String(tickCount));
+    localStorage.setItem('hila_currentSignal', JSON.stringify(currentSignal));
+    if (paperBalance !== null) localStorage.setItem('hila_paperBalance', String(paperBalance));
+  }, [messages, price, priceHistory, signalHistory, tickCount, currentSignal, paperBalance]);
+
+  // ─── Fetch saved settings from backend ──────────────────────────
   useEffect(() => {
     const email = CURRENT_USER.email;
     if (email) {
@@ -460,13 +495,59 @@ export default function HilaBotMiniApp() {
   };
 
   const screens = {
-    signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} messages={messages} setMessages={setMessages} />,
+    signals: <SignalsScreen
+      binance={binance}
+      onOpenSettings={() => setSettingsOpen(true)}
+      selectedSymbol={selectedSymbol}
+      paperMode={paperMode}
+      messages={messages}
+      setMessages={setMessages}
+      price={price}
+      setPrice={setPrice}
+      priceHistory={priceHistory}
+      setPriceHistory={setPriceHistory}
+      signalHistory={signalHistory}
+      setSignalHistory={setSignalHistory}
+      tickCount={tickCount}
+      setTickCount={setTickCount}
+      currentSignal={currentSignal}
+      setCurrentSignal={setCurrentSignal}
+      paperBalance={paperBalance}
+      setPaperBalance={setPaperBalance}
+      analyzing={analyzing}
+      setAnalyzing={setAnalyzing}
+      agentStatus={agentStatus}
+      setAgentStatus={setAgentStatus}
+    />,
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
     profile: <ProfileScreen user={CURRENT_USER} binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
     backtest: <Backtest />,
-    admin: isAdmin ? <AdminScreen /> : <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} messages={messages} setMessages={setMessages} />,
+    admin: isAdmin ? <AdminScreen /> : <SignalsScreen
+      binance={binance}
+      onOpenSettings={() => setSettingsOpen(true)}
+      selectedSymbol={selectedSymbol}
+      paperMode={paperMode}
+      messages={messages}
+      setMessages={setMessages}
+      price={price}
+      setPrice={setPrice}
+      priceHistory={priceHistory}
+      setPriceHistory={setPriceHistory}
+      signalHistory={signalHistory}
+      setSignalHistory={setSignalHistory}
+      tickCount={tickCount}
+      setTickCount={setTickCount}
+      currentSignal={currentSignal}
+      setCurrentSignal={setCurrentSignal}
+      paperBalance={paperBalance}
+      setPaperBalance={setPaperBalance}
+      analyzing={analyzing}
+      setAnalyzing={setAnalyzing}
+      agentStatus={agentStatus}
+      setAgentStatus={setAgentStatus}
+    />,
   };
 
   return (
