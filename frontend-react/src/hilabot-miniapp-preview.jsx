@@ -244,7 +244,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
           if (data.paperBalance !== undefined) setPaperBalance(data.paperBalance);
         })
         .catch(() => {});
-    }, 5000);
+    }, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -338,6 +338,19 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]); }
   };
   const stopAgent = async () => {
+  const manualTrade = async (action) => {
+    try {
+      const res = await fetch("/api/agent/manual-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: CURRENT_USER.email, action }),
+      });
+      const data = await res.json();
+      setMessages(prev => [...prev, { type: "bot", time: "now", text: `💱 Manual ${action} trade: ${data.message || data.error}` }]);
+    } catch (e) {
+      setMessages(prev => [...prev, { type: "bot", time: "now", text: "❌ Manual trade failed." }]);
+    }
+  };
     try {
       const res = await fetch('/api/agent/stop', { method: 'POST' });
       const data = await res.json();
@@ -398,6 +411,8 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         <button onClick={startAgent} style={pill(GREEN)}>▶ Start</button>
         <button onClick={stopAgent} style={pill(GOLD)}>⏸ Pause</button>
         <button style={pill(RED)}>⏹ Stop</button>
+        <button onClick={() => manualTrade("BUY")} style={pill(GREEN)}>💰 Buy</button>
+        <button onClick={() => manualTrade("SELL")} style={pill(RED)}>💰 Sell</button>
       </div>
     </div>
   );
