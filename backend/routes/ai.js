@@ -1,20 +1,25 @@
 const router = require('express').Router();
 const axios = require('axios');
 
-// Fallback function that returns signal, confidence, reason
 function fallbackSignal(indicators) {
-  const { rsi, macd } = indicators;
-  let score = 0;
-  if (rsi < 30) score += 2;
-  else if (rsi > 70) score -= 2;
-  if (macd > 0) score += 1;
-  else if (macd < 0) score -= 1;
-  const signal = score >= 3 ? 'BUY' : score <= -3 ? 'SELL' : 'HOLD';
-  const confidence = Math.min(Math.abs(score) / 4 * 100, 100);
-  return { signal, confidence, reason: `Technical: RSI=${rsi.toFixed(1)}, MACD=${macd.toFixed(3)}` };
+  const { rsi, macd, ema } = indicators;
+  let signal = 'HOLD';
+  let confidence = 25;
+  // Oversold / Overbought
+  if (rsi < 30) { signal = 'BUY'; confidence = 70; }
+  else if (rsi > 70) { signal = 'SELL'; confidence = 70; }
+  else if (rsi < 40) { signal = 'BUY'; confidence = 50; }
+  else if (rsi > 60) { signal = 'SELL'; confidence = 50; }
+  // MACD confirmation
+  if (macd && macd > 0 && signal === 'BUY') confidence += 10;
+  else if (macd && macd < 0 && signal === 'SELL') confidence += 10;
+  // EMA trend (dummy)
+  if (ema && signal === 'BUY' && ema > 0) confidence += 5;
+  confidence = Math.min(confidence, 100);
+  if (confidence < 30) { signal = 'HOLD'; confidence = 25; }
+  return { signal, confidence, reason: `Fallback: RSI=${rsi.toFixed(1)}, MACD=${macd?.toFixed(3) || 'N/A'}` };
 }
 
-// Exported for direct use by agent
 async function getAnalysis(market, price, indicators, email) {
   try {
     const response = await axios.post('http://localhost:5002/analyze', {
@@ -23,7 +28,7 @@ async function getAnalysis(market, price, indicators, email) {
       price,
       indicators,
     }, { timeout: 2500 });
-    return response.data; // expects { signal, confidence, reason }
+    return response.data;
   } catch (error) {
     console.warn('Python agent unavailable, using fallback');
     return fallbackSignal(indicators);
@@ -33,7 +38,6 @@ async function getAnalysis(market, price, indicators, email) {
 router.post('/analyze', async (req, res) => {
   const { market, price, indicators, email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
-
   try {
     const result = await getAnalysis(market, price, indicators, email);
     res.json(result);

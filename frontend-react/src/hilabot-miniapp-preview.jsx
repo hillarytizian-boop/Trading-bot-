@@ -213,6 +213,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
     wsRef.current = new WebSocket(wsUrl);
     wsRef.current.onmessage = (e) => {
+    if (document.hidden) return;
       const data = JSON.parse(e.data);
       if (data.p) {
         const newPrice = parseFloat(data.p);
@@ -244,7 +245,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
           if (data.paperBalance !== undefined) setPaperBalance(data.paperBalance);
         })
         .catch(() => {});
-    }, 10000);
+    }, 15000);
     return () => clearInterval(interval);
   }, []);
 
