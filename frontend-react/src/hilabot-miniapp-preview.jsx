@@ -58,6 +58,7 @@ const SettingsDrawer = React.memo(function SettingsDrawer({ open, onClose, binan
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: localEmail || email, apiKey: apiKey.trim(), secretKey: apiSecret.trim() }),
+        closes: closes,
       });
       const data = await res.json();
     console.log("📡 Binance response:", data);
@@ -91,6 +92,7 @@ const SettingsDrawer = React.memo(function SettingsDrawer({ open, onClose, binan
     onSymbolChange(symbol);
     try {
       await fetch("/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail || email, settings: { market: symbol.replace("/", "") } }) });
+        closes: closes,
     } catch (err) { console.error("Failed to save symbol", err); }
   };
 
@@ -268,11 +270,13 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
+      const closes = priceHistory;
     console.log("[Frontend] Indicators:", ind);
       const res = await fetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+        closes: closes,
           market: selectedSymbol,
           price: currentPrice,
           indicators: ind,
@@ -308,11 +312,13 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
+      const closes = priceHistory;
     console.log("[Frontend] Indicators:", ind);
       const res = await fetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+        closes: closes,
           market: selectedSymbol,
           price,
           indicators: ind,
@@ -340,6 +346,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   const startAgent = async () => {
     try {
       const res = await fetch('/api/agent/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email }) });
+        closes: closes,
       const data = await res.json();
     console.log("📡 Binance response:", data);
       setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
@@ -508,6 +515,7 @@ export default function HilaBotMiniApp() {
     setPaperMode(value);
     try {
       await fetch("/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }) });
+        closes: closes,
     } catch (err) { console.error("Failed to save paper mode", err); }
   };
 
