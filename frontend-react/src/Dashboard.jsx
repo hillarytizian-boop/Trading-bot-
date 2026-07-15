@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+
 const DARK_BG = "#0E1621", DARK_PANEL = "#17212B", DARK_BORDER = "rgba(255,255,255,0.07)";
 const TEXT = "#E7ECF0", MUTED = "#6C7883", GREEN = "#4FCE5D", RED = "#FF5E5E", GOLD = "#F0B429", TG_BLUE = "#2AABEE";
+
 function MetricCard({ label, value, color }) {
   return (
     <div style={{ background: DARK_PANEL, borderRadius: 14, padding: 16, border: `1px solid ${DARK_BORDER}` }}>
@@ -9,7 +11,9 @@ function MetricCard({ label, value, color }) {
     </div>
   );
 }
-function MiniChart({ data, color }) {
+
+// Simple canvas chart
+function MiniChart({ data, color, label }) {
   const canvasRef = useRef(null);
   useEffect(() => {
     if (!canvasRef.current || !data || data.length < 2) return;
@@ -32,6 +36,7 @@ function MiniChart({ data, color }) {
   }, [data, color]);
   return <canvas ref={canvasRef} width={200} height={60} style={{ width: '100%', height: 60, background: 'rgba(255,255,255,0.03)', borderRadius: 8 }} />;
 }
+
 export default function Dashboard({ binance, email }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -39,22 +44,29 @@ export default function Dashboard({ binance, email }) {
   const [balance, setBalance] = useState(binance?.balance || '0.00');
   const [trades, setTrades] = useState([]);
   const [equityCurve, setEquityCurve] = useState([]);
+
   useEffect(() => {
     const ws = new WebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade');
-    ws.onmessage = (e) => { try { const d = JSON.parse(e.data); if (d.p) setPrice(parseFloat(d.p)); } catch {} };
+    ws.onmessage = (e) => {
+      try { const d = JSON.parse(e.data); if (d.p) setPrice(parseFloat(d.p)); } catch {}
+    };
     return () => ws.close();
   }, []);
+
   useEffect(() => {
     const fetchData = async () => {
       try {
+        // Fetch all trades
         const res = await fetch(`/api/trades?email=${encodeURIComponent(email)}`);
         const allTrades = await res.json();
         if (allTrades && allTrades.length > 0) {
           const closed = allTrades.filter(t => t.status === 'closed' && t.pnl !== undefined);
           setTrades(closed);
+          // Build equity curve
           let cum = 0;
           const curve = closed.map(t => { cum += t.pnl; return cum; });
           setEquityCurve(curve);
+          // Stats
           const total = closed.length;
           const wins = closed.filter(t => t.pnl > 0).length;
           const losses = closed.filter(t => t.pnl < 0).length;
@@ -67,6 +79,7 @@ export default function Dashboard({ binance, email }) {
           closed.forEach(t => { running += t.pnl; if (running > peak) peak = running; const dd = peak - running; if (dd > maxDrawdown) maxDrawdown = dd; });
           setStats({ totalTrades: total, wins, losses, totalPnl, winRate, avgWin, avgLoss, profitFactor, maxDrawdown });
         }
+        // Balance
         if (binance?.connected) {
           const balRes = await fetch(`/api/binance/balance?email=${encodeURIComponent(email)}`);
           const balData = await balRes.json();
@@ -79,9 +92,12 @@ export default function Dashboard({ binance, email }) {
     const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, [email, binance?.connected]);
+
   if (loading) return <div style={{ flex:1, display:'flex', justifyContent:'center', alignItems:'center', color:MUTED }}>Loading...</div>;
   if (!stats) return <div style={{ padding:16, color:MUTED }}>No trade data yet.</div>;
+
   const winRateColor = stats.winRate >= 60 ? GREEN : stats.winRate >= 40 ? GOLD : RED;
+
   return (
     <div style={{ flex:1, overflowY:'auto', background: DARK_BG, padding: 16 }}>
       <h2 style={{ fontSize:20, fontWeight:700, marginBottom:16, color:TEXT }}>Performance Dashboard</h2>
