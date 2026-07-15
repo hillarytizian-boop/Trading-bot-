@@ -55,6 +55,8 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     try {
       const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
       const data = await res.json();
+      console.log("📊 Manual AI Response:", data);
+      console.log("📊 AI Response:", data);
       if (res.ok) {
         setStatus('connected');
         onBinanceConnect(localEmail);
@@ -274,14 +276,22 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         }),
       });
       const data = await res.json();
+      console.log("📊 Manual AI Response:", data);
+      console.log("📊 AI Response:", data);
       setCurrentSignal(data);
+      const signalText = data.signal || "HOLD";
+      const confidenceText = data.confidence || 0;
+      const reasonText = data.reason || "No reason";
+      const signalText = data.signal || "HOLD";
+      const confidenceText = data.confidence || 0;
+      const reasonText = data.reason || "No reason";
       const emoji = data.signal === 'BUY' ? '🚀' : data.signal === 'SELL' ? '🔻' : '⏳';
       setMessages(prev => [...prev, {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
-        text: `${emoji} ${data.signal} (${data.confidence}%) · $${currentPrice.toFixed(2)}`,
-        signal: data,
-        reason: data.reason,
+        text: `${emoji} ${signalText} ${confEmoji} ${confidenceText}% · $${currentPrice.toFixed(2)}`,
+        signal: { signal: signalText, confidence: confidenceText, risk: "LOW" },
+        reason: reasonText,
       }]);
       setSignalHistory(prev => {
         const u = [...prev, { signal: data.signal, confidence: data.confidence, price: currentPrice, time: new Date().toISOString() }];
@@ -309,13 +319,21 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         }),
       });
       const data = await res.json();
+      console.log("📊 Manual AI Response:", data);
+      console.log("📊 AI Response:", data);
       setCurrentSignal(data);
+      const signalText = data.signal || "HOLD";
+      const confidenceText = data.confidence || 0;
+      const reasonText = data.reason || "No reason";
+      const signalText = data.signal || "HOLD";
+      const confidenceText = data.confidence || 0;
+      const reasonText = data.reason || "No reason";
       setMessages(prev => [...prev, {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: '📊 Manual:',
-        signal: data,
-        reason: data.reason,
+        signal: { signal: signalText, confidence: confidenceText, risk: "LOW" },
+        reason: reasonText,
       }]);
     } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Analysis failed.' }]); }
     setAnalyzing(false);
@@ -325,6 +343,8 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     try {
       const res = await fetch('/api/agent/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email }) });
       const data = await res.json();
+      console.log("📊 Manual AI Response:", data);
+      console.log("📊 AI Response:", data);
       setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
     } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]); }
   };
@@ -332,6 +352,8 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     try {
       const res = await fetch('/api/agent/stop', { method: 'POST' });
       const data = await res.json();
+      console.log("📊 Manual AI Response:", data);
+      console.log("📊 AI Response:", data);
       setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
     } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]); }
   };
