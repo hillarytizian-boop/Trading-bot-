@@ -2,22 +2,32 @@ const router = require('express').Router();
 const axios = require('axios');
 
 function fallbackSignal(indicators) {
-  const { rsi, macd, ema } = indicators;
+  const { rsi, macd } = indicators;
   let signal = 'HOLD';
-  let confidence = 25;
-  // Oversold / Overbought
-  if (rsi < 30) { signal = 'BUY'; confidence = 70; }
-  else if (rsi > 70) { signal = 'SELL'; confidence = 70; }
-  else if (rsi < 40) { signal = 'BUY'; confidence = 50; }
-  else if (rsi > 60) { signal = 'SELL'; confidence = 50; }
-  // MACD confirmation
-  if (macd && macd > 0 && signal === 'BUY') confidence += 10;
-  else if (macd && macd < 0 && signal === 'SELL') confidence += 10;
-  // EMA trend (dummy)
-  if (ema && signal === 'BUY' && ema > 0) confidence += 5;
+  let confidence = 30;
+  let reason = '';
+  if (rsi < 30) {
+    signal = 'BUY';
+    confidence = 70 + (30 - rsi) * 1.5;
+    reason = `RSI oversold (${rsi.toFixed(1)})`;
+  } else if (rsi > 70) {
+    signal = 'SELL';
+    confidence = 70 + (rsi - 70) * 1.5;
+    reason = `RSI overbought (${rsi.toFixed(1)})`;
+  } else if (rsi < 45) {
+    signal = 'BUY';
+    confidence = 50 + (45 - rsi) * 2;
+    reason = `RSI moderate low (${rsi.toFixed(1)})`;
+  } else if (rsi > 55) {
+    signal = 'SELL';
+    confidence = 50 + (rsi - 55) * 2;
+    reason = `RSI moderate high (${rsi.toFixed(1)})`;
+  }
+  if (macd && macd > 0 && signal === 'BUY') { confidence += 10; reason += ', MACD positive'; }
+  else if (macd && macd < 0 && signal === 'SELL') { confidence += 10; reason += ', MACD negative'; }
   confidence = Math.min(confidence, 100);
-  if (confidence < 30) { signal = 'HOLD'; confidence = 25; }
-  return { signal, confidence, reason: `Fallback: RSI=${rsi.toFixed(1)}, MACD=${macd?.toFixed(3) || 'N/A'}` };
+  if (confidence < 30) { signal = 'HOLD'; confidence = 25; reason = 'No clear signal'; }
+  return { signal, confidence, reason };
 }
 
 async function getAnalysis(market, price, indicators, email) {
