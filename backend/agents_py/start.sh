@@ -1,4 +1,6 @@
 #!/bin/bash
 cd "$(dirname "$0")"
-pip install -r requirements.txt --quiet
+echo "📦 Installing Python dependencies..."
+pip install --quiet flask pandas numpy requests openai
+echo "🐍 Starting Python agent server..."
 python server.py
