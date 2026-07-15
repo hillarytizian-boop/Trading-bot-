@@ -1,6 +1,4 @@
-import { Suspense, lazy } from 'react';
-
-// Lazy load the main app (reduces initial bundle)
+import React, { Suspense, lazy } from 'react';
 const HilaBotMiniApp = lazy(() => import('./hilabot-miniapp-preview'));
 
 function App() {
@@ -26,12 +24,7 @@ function App() {
           animation: 'spin 1s linear infinite',
         }} />
         <p style={{ fontSize: 16, color: '#6C7883' }}>Loading Hila Bot...</p>
-        <style>{`
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-        `}</style>
+        <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
       </div>
     }>
       <HilaBotMiniApp />
