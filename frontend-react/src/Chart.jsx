@@ -25,7 +25,6 @@ export default function Chart({ priceHistory, signals }) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    // Background
     const grad = ctx.createLinearGradient(0, 0, 0, h);
     grad.addColorStop(0, 'rgba(42,171,238,0.08)');
     grad.addColorStop(1, 'rgba(42,171,238,0.01)');
@@ -35,7 +34,6 @@ export default function Chart({ priceHistory, signals }) {
     ctx.lineWidth = 1;
     ctx.strokeRect(0, 0, w, h);
 
-    // Grid
     ctx.strokeStyle = 'rgba(255,255,255,0.03)';
     ctx.lineWidth = 0.5;
     for (let i = 0; i < 4; i++) {
@@ -61,7 +59,6 @@ export default function Chart({ priceHistory, signals }) {
     const range = maxP - minP || 1;
     const pad = 10;
 
-    // Price line
     ctx.beginPath();
     ctx.strokeStyle = '#2AABEE';
     ctx.lineWidth = 2;
@@ -93,7 +90,6 @@ export default function Chart({ priceHistory, signals }) {
     ctx.fillStyle = areaGrad;
     ctx.fill();
 
-    // Current price label
     const curP = prices[prices.length-1];
     const lastY = h - pad - ((curP - minP) / range) * (h - 2*pad);
     ctx.fillStyle = '#2AABEE';
@@ -101,7 +97,6 @@ export default function Chart({ priceHistory, signals }) {
     ctx.textAlign = 'right';
     ctx.fillText('$' + curP.toFixed(2), w - pad, lastY - 6);
 
-    // Signal markers
     sigs.forEach((sig, idx) => {
       const idxP = Math.round((idx / sigs.length) * (prices.length - 1));
       if (idxP >= prices.length) return;
@@ -128,7 +123,6 @@ export default function Chart({ priceHistory, signals }) {
       ctx.fillText(sym, x, y - 10);
     });
 
-    // Legend
     const items = [
       { label: 'BUY', color: '#4FCE5D' },
       { label: 'SELL', color: '#FF5E5E' },

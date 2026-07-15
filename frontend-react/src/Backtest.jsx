@@ -1,7 +1,6 @@
 import { useState } from 'react';
 const DARK_BG = "#0E1621", DARK_PANEL = "#17212B", DARK_BORDER = "rgba(255,255,255,0.07)";
 const TEXT = "#E7ECF0", MUTED = "#6C7883", GREEN = "#4FCE5D", RED = "#FF5E5E", GOLD = "#F0B429", TG_BLUE = "#2AABEE";
-
 function MetricCard({ label, value, color }) {
   return (
     <div style={{ background: DARK_PANEL, borderRadius: 14, padding: 16, border: `1px solid ${DARK_BORDER}` }}>
@@ -10,13 +9,11 @@ function MetricCard({ label, value, color }) {
     </div>
   );
 }
-
 export default function Backtest() {
   const [params, setParams] = useState({ symbol: 'BTCUSDT', startDate: '2026-06-01', endDate: '2026-07-01', initialBalance: 1000, riskPerTrade: 2 });
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
   const runBacktest = async () => {
     setLoading(true); setError(null);
     try {
@@ -27,7 +24,6 @@ export default function Backtest() {
     } catch (err) { setError(err.message); }
     setLoading(false);
   };
-
   return (
     <div style={{ flex:1, overflowY:'auto', background: DARK_BG, padding: 16 }}>
       <h2 style={{ fontSize:20, fontWeight:700, marginBottom:16, color:TEXT }}>Backtest Strategy</h2>
