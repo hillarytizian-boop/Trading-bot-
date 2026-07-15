@@ -34,7 +34,7 @@ function AppHeader({ onOpenSettings, binanceConnected }) {
   );
 }
 
-const SettingsDrawer = React.memo(function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
+function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [localEmail, setLocalEmail] = useState(email || '');
@@ -50,18 +50,11 @@ const SettingsDrawer = React.memo(function SettingsDrawer({ open, onClose, binan
   const displayBalance = binance?.balance || '0.00';
 
   const saveBinanceKeys = async () => {
-    console.log("🔑 Attempting to connect Binance for:", localEmail || email);
     if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
     setStatus('connecting');
     try {
-      const res = await fetch("/api/binance/connect", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: localEmail || email, apiKey: apiKey.trim(), secretKey: apiSecret.trim() }),
-        closes: closes,
-      });
+      const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
       const data = await res.json();
-    console.log("📡 Binance response:", data);
       if (res.ok) {
         setStatus('connected');
         onBinanceConnect(localEmail);
@@ -92,7 +85,6 @@ const SettingsDrawer = React.memo(function SettingsDrawer({ open, onClose, binan
     onSymbolChange(symbol);
     try {
       await fetch("/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail || email, settings: { market: symbol.replace("/", "") } }) });
-        closes: closes,
     } catch (err) { console.error("Failed to save symbol", err); }
   };
 
@@ -270,13 +262,11 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
-      const closes = priceHistory;
     console.log("[Frontend] Indicators:", ind);
       const res = await fetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-        closes: closes,
           market: selectedSymbol,
           price: currentPrice,
           indicators: ind,
@@ -284,12 +274,9 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         }),
       });
       const data = await res.json();
-    console.log("📡 Binance response:", data);
       setCurrentSignal(data);
       const emoji = data.signal === 'BUY' ? '🚀' : data.signal === 'SELL' ? '🔻' : '⏳';
-      setMessages(prev => { const newMsgs = [...prev, {
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
+      setMessages(prev => [...prev, {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: `${emoji} ${data.signal} (${data.confidence}%) · $${currentPrice.toFixed(2)}`,
@@ -306,19 +293,15 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
 
   // ─── Manual ──────────────────────────────────────────────────
   const runManual = async () => {
-    if (!price) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
+    if (!price) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
-      const closes = priceHistory;
     console.log("[Frontend] Indicators:", ind);
       const res = await fetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-        closes: closes,
           market: selectedSymbol,
           price,
           indicators: ind,
@@ -326,47 +309,31 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         }),
       });
       const data = await res.json();
-    console.log("📡 Binance response:", data);
       setCurrentSignal(data);
-      setMessages(prev => { const newMsgs = [...prev, {
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
+      setMessages(prev => [...prev, {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: '📊 Manual:',
         signal: data,
         reason: data.reason,
       }]);
-    } catch (e) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '❌ Analysis failed.' }]); }
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
+    } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Analysis failed.' }]); }
     setAnalyzing(false);
   };
 
   const startAgent = async () => {
     try {
       const res = await fetch('/api/agent/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email }) });
-        closes: closes,
       const data = await res.json();
-    console.log("📡 Binance response:", data);
-      setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
-    } catch (e) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]); }
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
+    } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]); }
   };
   const stopAgent = async () => {
     try {
       const res = await fetch('/api/agent/stop', { method: 'POST' });
       const data = await res.json();
-    console.log("📡 Binance response:", data);
-      setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
-    } catch (e) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]); }
-      if (newMsgs.length > 30) newMsgs.shift();
-      return newMsgs;
+      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
+    } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]); }
   };
 
   return (
@@ -515,7 +482,6 @@ export default function HilaBotMiniApp() {
     setPaperMode(value);
     try {
       await fetch("/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }) });
-        closes: closes,
     } catch (err) { console.error("Failed to save paper mode", err); }
   };
 
