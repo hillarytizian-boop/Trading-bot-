@@ -1,21 +1,19 @@
 const router = require('express').Router();
 const supabase = require('../db');
-const { getAnalysis } = require('./ai');
 const { v4: uuidv4 } = require('uuid');
 const technical = require('technicalindicators');
 const Binance = require('binance-api-node').default;
 
 // ─── CONFIG ──────────────────────────────────────────────────────────
 const CONFIG = {
-  baseConfidenceThreshold: 50,
-  minConfidenceThreshold: 30,
-  maxTradeAmount: 0.50,
+  maxTradeAmount: 0.50,        // max $0.50 per trade
   minTradeAmount: 0.10,
-  riskPerTrade: 0.01,          // 1% of balance (will be adjusted)
   stopLossPercent: 2,
-  takeProfitPercent: 5,
+  takeProfitPercent: 6,        // 1:3 risk/reward
   maxDailyLoss: 0.05,
-  kellyFraction: 0.25,         // use 25% of Kelly for safety
+  kellyFraction: 0.25,
+  atrMultiplierSL: 2,
+  rewardToRisk: 3,
 };
 
 // ─── PERSISTENT STATE ──────────────────────────────────────────────
@@ -35,14 +33,15 @@ async function loadAgentState(email) {
       tradeOpenTime: null,
       paperBalance: 1000,
       priceHistory: [],
-      lastSignal: null,
       lastTradeAttempt: null,
       consecutiveWins: 0,
       consecutiveLosses: 0,
       startingBalance: 1000,
       tradeHistory: [],
-      // Performance tracking
       signalStats: { BUY: { wins: 0, losses: 0 }, SELL: { wins: 0, losses: 0 } },
+      marketRegime: 'unknown',
+      volatility: 0,
+      lastSignal: null,
     };
   }
   return data.agent_state;
@@ -59,12 +58,28 @@ async function getCandles(symbol, interval = '1m', limit = 50) {
   return data.map(c => parseFloat(c[4]));
 }
 
+// ─── MARKET REGIME DETECTION ──────────────────────────────────────
+function detectRegime(closes) {
+  if (closes.length < 20) return 'unknown';
+  const recent = closes.slice(-20);
+  const diffs = [];
+  for (let i = 1; i < recent.length; i++) {
+    diffs.push(recent[i] - recent[i-1]);
+  }
+  const avgMove = diffs.reduce((a,b) => a + Math.abs(b), 0) / diffs.length;
+  const netMove = recent[recent.length-1] - recent[0];
+  const strength = Math.abs(netMove) / (avgMove || 1);
+  if (strength > 2.5) return 'trending';
+  if (strength > 1.5) return 'weak_trend';
+  return 'ranging';
+}
+
 // ─── RISK OF RUIN ───────────────────────────────────────────────────
 function riskOfRuin(winRate, riskPerTrade) {
   if (winRate <= 0 || winRate >= 1) return 0;
   const lossRate = 1 - winRate;
   const r = lossRate / winRate;
-  if (r >= 1) return 1; // edge case
+  if (r >= 1) return 1;
   return Math.pow(r, 0.5 / riskPerTrade);
 }
 
@@ -75,7 +90,143 @@ function kellyFraction(winRate, avgWin, avgLoss) {
   const p = winRate;
   const q = 1 - p;
   const k = (p * b - q) / b;
-  return Math.max(0, Math.min(k, 0.1)); // cap at 10%
+  return Math.max(0, Math.min(k, 0.1));
+}
+
+// ─── AI DECISION ENGINE ────────────────────────────────────────────
+function aiDecision(price, closes, state) {
+  if (closes.length < 20) {
+    return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data', tradeAmount: 0 };
+  }
+
+  // ─── 1. Calculate all indicators ────────────────────────────────
+  const rsi = technical.RSI.calculate({ values: closes, period: 14 });
+  const macd = technical.MACD.calculate({
+    values: closes,
+    fastPeriod: 12,
+    slowPeriod: 26,
+    signalPeriod: 9,
+  });
+  const bb = technical.BollingerBands.calculate({
+    values: closes,
+    period: 20,
+    stdDev: 2,
+  });
+  const ema20 = technical.EMA.calculate({ values: closes, period: 20 });
+  const ema50 = technical.EMA.calculate({ values: closes, period: 50 });
+  const atr = technical.ATR.calculate({
+    high: closes.map(c => c * 1.001),
+    low: closes.map(c => c * 0.999),
+    close: closes,
+    period: 14,
+  });
+
+  const lastRsi = rsi[rsi.length-1] || 50;
+  const lastMacd = macd[macd.length-1] || { MACD: 0, signal: 0 };
+  const lastBb = bb[bb.length-1] || { upper: price * 1.02, lower: price * 0.98 };
+  const lastEma20 = ema20[ema20.length-1] || price;
+  const lastEma50 = ema50[ema50.length-1] || price;
+  const lastAtr = atr[atr.length-1] || (price * 0.02);
+
+  // ─── 2. Market regime ────────────────────────────────────────────
+  const regime = detectRegime(closes);
+  state.marketRegime = regime;
+  state.volatility = lastAtr / price;
+
+  // ─── 3. Score the trade ──────────────────────────────────────────
+  let score = 0;
+  let reasons = [];
+
+  // RSI
+  if (lastRsi < 30) { score += 3; reasons.push('RSI oversold'); }
+  else if (lastRsi > 70) { score -= 3; reasons.push('RSI overbought'); }
+  else if (lastRsi < 45) { score += 1; reasons.push('RSI low'); }
+  else if (lastRsi > 55) { score -= 1; reasons.push('RSI high'); }
+
+  // MACD
+  if (lastMacd.MACD > lastMacd.signal) { score += 2; reasons.push('MACD bullish'); }
+  else if (lastMacd.MACD < lastMacd.signal) { score -= 2; reasons.push('MACD bearish'); }
+
+  // Bollinger
+  if (price < lastBb.lower) { score += 2; reasons.push('Below lower BB'); }
+  else if (price > lastBb.upper) { score -= 2; reasons.push('Above upper BB'); }
+
+  // EMA cross
+  if (lastEma20 > lastEma50) { score += 1; reasons.push('EMA20 > EMA50'); }
+  else if (lastEma20 < lastEma50) { score -= 1; reasons.push('EMA20 < EMA50'); }
+
+  // Regime bonus
+  if (regime === 'trending' && Math.abs(score) > 2) {
+    score *= 1.2;
+  } else if (regime === 'ranging') {
+    score *= 0.8;
+  }
+
+  // ─── 4. Determine signal ──────────────────────────────────────────
+  let signal = 'HOLD';
+  let confidence = 30;
+  if (score >= 5) { signal = 'BUY'; confidence = 70 + Math.min(score - 5, 5) * 5; }
+  else if (score <= -5) { signal = 'SELL'; confidence = 70 + Math.min(Math.abs(score) - 5, 5) * 5; }
+  else if (score >= 3) { signal = 'BUY'; confidence = 50 + (score - 3) * 8; }
+  else if (score <= -3) { signal = 'SELL'; confidence = 50 + (Math.abs(score) - 3) * 8; }
+  else { signal = 'HOLD'; confidence = 30 + Math.abs(score) * 5; }
+
+  confidence = Math.min(confidence, 100);
+  confidence = Math.max(confidence, 20);
+
+  // ─── 5. Adaptive confidence ──────────────────────────────────────
+  if (regime === 'trending') confidence += 10;
+  else if (regime === 'ranging') confidence -= 10;
+
+  // ─── 6. Dynamic position sizing ──────────────────────────────────
+  // Kelly sizing based on win rate
+  const totalTrades = Object.values(state.signalStats).reduce((s, t) => s + t.wins + t.losses, 0);
+  const wins = Object.values(state.signalStats).reduce((s, t) => s + t.wins, 0);
+  const losses = Object.values(state.signalStats).reduce((s, t) => s + t.losses, 0);
+  const winRate = totalTrades > 0 ? wins / totalTrades : 0.5;
+  // Average win/loss from history
+  const avgWin = 0.05; // placeholder – could be calculated from trades
+  const avgLoss = 0.02;
+  const kelly = kellyFraction(winRate, avgWin, avgLoss) * CONFIG.kellyFraction;
+  const baseRisk = Math.max(0.005, Math.min(kelly, 0.03));
+
+  // Risk-of-ruin check
+  const ror = riskOfRuin(winRate, baseRisk);
+  let riskPerTrade = baseRisk;
+  if (ror > 0.1) riskPerTrade *= 0.5;
+
+  // ─── 7. Dynamic trade amount ──────────────────────────────────────
+  const balance = state.paperBalance;
+  let tradeAmount = balance * riskPerTrade;
+  tradeAmount = Math.min(tradeAmount, CONFIG.maxTradeAmount);
+  tradeAmount = Math.max(tradeAmount, CONFIG.minTradeAmount);
+
+  // ─── 8. Volatility adjustment ────────────────────────────────────
+  const volPct = lastAtr / price;
+  if (volPct > 0.03) tradeAmount *= 0.7;
+  else if (volPct < 0.01) tradeAmount *= 1.3;
+
+  tradeAmount = Math.min(tradeAmount, CONFIG.maxTradeAmount);
+  tradeAmount = Math.max(tradeAmount, CONFIG.minTradeAmount);
+
+  // ─── 9. Decision ──────────────────────────────────────────────────
+  const reason = reasons.join(', ') || 'No clear signal';
+
+  // Only trade if confidence >= 50 and score != 0
+  if (signal === 'HOLD' || confidence < 50) {
+    return { signal: 'HOLD', confidence, reason, tradeAmount: 0 };
+  }
+
+  return {
+    signal,
+    confidence,
+    reason,
+    tradeAmount,
+    score,
+    regime,
+    volatility: volPct,
+    riskPerTrade,
+  };
 }
 
 // ─── MAIN AGENT LOOP ──────────────────────────────────────────────
@@ -138,20 +289,15 @@ async function agentLoop(email) {
             pnl: pnl,
             status: 'closed',
             closed_at: new Date().toISOString(),
-            close_reason: 'SL/TP/TIME',
+            close_reason: closed ? (price <= sl ? 'SL' : price >= tp ? 'TP' : 'TIME') : 'unknown',
           }).eq('id', state.activeTradeId);
 
-          // Update performance stats
+          // Update stats
           const sigType = t.type;
-          if (pnl > 0) {
-            state.signalStats[sigType].wins += 1;
-          } else {
-            state.signalStats[sigType].losses += 1;
-          }
+          if (pnl > 0) state.signalStats[sigType].wins += 1;
+          else state.signalStats[sigType].losses += 1;
 
-          if (isPaper) {
-            state.paperBalance += pnl;
-          }
+          if (isPaper) state.paperBalance += pnl;
           state.activeTradeId = null;
           state.tradeOpenTime = null;
           if (pnl > 0) state.consecutiveWins++; else state.consecutiveLosses++;
@@ -171,53 +317,18 @@ async function agentLoop(email) {
       return;
     }
 
-    // ─── Get signal ──────────────────────────────────────────────────
-    const closes = state.priceHistory;
-    if (closes.length < 20) { processingLock = false; return; }
+    // ─── AI makes the decision ─────────────────────────────────────
+    const decision = aiDecision(price, state.priceHistory, state);
+    state.lastSignal = decision;
 
-    // Compute indicators for AI
-    const rsi = technical.RSI.calculate({ values: closes, period: 14 });
-    const macd = technical.MACD.calculate({
-      values: closes,
-      fastPeriod: 12,
-      slowPeriod: 26,
-      signalPeriod: 9,
-    });
-    const ind = {
-      rsi: rsi[rsi.length-1],
-      macd: macd[macd.length-1],
-      closes: closes,
-    };
-
-    // AI analysis (passes closes for enhanced fallback)
-    const aiResult = await getAnalysis(
-      symbol,
-      price,
-      { rsi: ind.rsi, macd: ind.macd ? ind.macd.MACD : 0, closes: closes },
-      email
-    );
-    state.lastSignal = aiResult;
-
-    // ─── Adaptive confidence based on volatility ──────────────────
-    // Compute volatility (ATR approximation)
-    const atr = (Math.max(...closes.slice(-20)) - Math.min(...closes.slice(-20))) / 20;
-    const volPct = atr / price;
-    let threshold = CONFIG.baseConfidenceThreshold;
-    if (volPct > 0.03) threshold = Math.max(CONFIG.minConfidenceThreshold, threshold - 10); // lower in high vol
-    else if (volPct < 0.01) threshold = Math.min(70, threshold + 10); // higher in low vol
-
-    const finalSignal = (aiResult.signal !== 'HOLD' && aiResult.confidence >= threshold)
-      ? aiResult.signal
-      : 'HOLD';
-
-    if (finalSignal === 'HOLD') {
-      state.lastTradeAttempt = `HOLD (${aiResult.confidence}%)`;
+    if (decision.signal === 'HOLD' || decision.tradeAmount === 0) {
+      state.lastTradeAttempt = `HOLD (${decision.confidence}%)`;
       await saveAgentState(email, state);
       processingLock = false;
       return;
     }
 
-    // ─── Determine balance ──────────────────────────────────────────
+    // ─── Balance check ──────────────────────────────────────────────
     let balance;
     if (isPaper) {
       balance = state.paperBalance;
@@ -241,43 +352,14 @@ async function agentLoop(email) {
       return;
     }
 
-    // ─── Kelly sizing ──────────────────────────────────────────────
-    const stats = state.signalStats[finalSignal];
-    const total = stats.wins + stats.losses;
-    let winRate = total > 0 ? stats.wins / total : 0.5;
-    // Use overall win rate if specific signal has too few trades
-    const totalTrades = Object.values(state.signalStats).reduce((s, t) => s + t.wins + t.losses, 0);
-    if (total < 5) {
-      winRate = totalTrades > 0 ? (Object.values(state.signalStats).reduce((s, t) => s + t.wins, 0) / totalTrades) : 0.5;
-    }
-    // Average win/loss (global)
-    const trades = await supabase
-      .from('trades')
-      .select('pnl')
-      .eq('user_email', email)
-      .eq('status', 'closed');
-    const pnls = trades.data?.map(t => t.pnl) || [];
-    const avgWin = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0) / (pnls.filter(p => p > 0).length || 1);
-    const avgLoss = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0)) / (pnls.filter(p => p < 0).length || 1);
-
-    let kelly = kellyFraction(winRate, avgWin || 1, avgLoss || 1);
-    kelly *= CONFIG.kellyFraction; // 25% of Kelly
-    kelly = Math.max(0.005, Math.min(kelly, 0.03)); // clamp between 0.5% and 3%
-
-    // Risk-of-ruin check
-    const ror = riskOfRuin(winRate, kelly);
-    if (ror > 0.1) {
-      kelly *= 0.5; // reduce risk if ruin probability too high
-    }
-
-    const tradeAmount = Math.max(CONFIG.minTradeAmount, Math.min(balance * kelly, CONFIG.maxTradeAmount));
+    // ─── Execute trade ──────────────────────────────────────────────
+    const tradeAmount = Math.min(decision.tradeAmount, balance * 0.5);
     const quantity = tradeAmount / price;
 
-    // ─── Stop Loss / Take Profit ──────────────────────────────────
     const slPercent = CONFIG.stopLossPercent;
     const tpPercent = CONFIG.takeProfitPercent;
     let stopLoss, takeProfit;
-    if (finalSignal === 'BUY') {
+    if (decision.signal === 'BUY') {
       stopLoss = price * (1 - slPercent / 100);
       takeProfit = price * (1 + tpPercent / 100);
     } else {
@@ -285,32 +367,34 @@ async function agentLoop(email) {
       takeProfit = price * (1 - tpPercent / 100);
     }
 
-    // ─── Execute trade ──────────────────────────────────────────────
     const tradeId = uuidv4();
     await supabase.from('trades').insert([{
       id: tradeId,
       user_email: email,
       symbol: symbol,
-      type: finalSignal,
+      type: decision.signal,
       entry_price: price,
       quantity: quantity,
       stop_loss: stopLoss,
       take_profit: takeProfit,
       duration: 120,
-      signal_confidence: aiResult.confidence,
-      signal_reason: aiResult.reason || 'AI signal',
+      signal_confidence: decision.confidence,
+      signal_reason: decision.reason,
       status: 'open',
       opened_at: new Date().toISOString(),
       is_paper: isPaper,
+      trade_score: decision.score,
+      market_regime: decision.regime,
+      volatility: decision.volatility,
     }]);
 
     state.activeTradeId = tradeId;
     state.tradeOpenTime = new Date();
     state.tradesToday++;
-    state.lastTradeAttempt = `✅ ${finalSignal} at ${price} ($${tradeAmount.toFixed(2)})`;
+    state.lastTradeAttempt = `✅ ${decision.signal} at ${price} ($${tradeAmount.toFixed(2)})`;
     await saveAgentState(email, state);
 
-    console.log(`📄 ${isPaper ? 'PAPER' : 'REAL'} TRADE: ${finalSignal} ${symbol} at ${price} ($${tradeAmount.toFixed(2)})`);
+    console.log(`📄 ${isPaper ? 'PAPER' : 'REAL'} TRADE: ${decision.signal} ${symbol} at ${price} ($${tradeAmount.toFixed(2)}, score: ${decision.score})`);
 
   } catch (error) {
     console.error('[Agent] Loop error:', error);
