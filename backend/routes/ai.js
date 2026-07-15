@@ -12,7 +12,6 @@ const MODELS = [
   'z-ai/glm-5.2',
 ];
 
-// ─── Helper: query a single NVIDIA model ────────────────────────
 async function queryNvidiaModel(model, prompt) {
   try {
     const completion = await nvidiaClient.chat.completions.create({
@@ -27,7 +26,7 @@ async function queryNvidiaModel(model, prompt) {
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      if (parsed.signal && parsed.confidence !== undefined && parsed.reason) {
+      if (parsed.signal && parsed.confidence !== undefined) {
         return { model, success: true, data: parsed };
       }
     }
@@ -39,7 +38,7 @@ async function queryNvidiaModel(model, prompt) {
       data: {
         signal: signalMatch ? signalMatch[0].toUpperCase() : 'HOLD',
         confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : 50,
-        reason: content.slice(0, 200),
+        reason: content.slice(0, 200) || 'Analysis complete',
       },
     };
   } catch (error) {
@@ -48,35 +47,73 @@ async function queryNvidiaModel(model, prompt) {
   }
 }
 
-function buildPrompt(price, indicators, closes) {
-  let technicalData = '';
-  if (closes && closes.length > 0) {
-    const recent = closes.slice(-10);
-    technicalData = `\nRecent prices: ${recent.join(', ')}\n`;
-  }
+function buildPrompt(price, indicators) {
+  // ─── Force use of provided indicators ──────────────────────────
+  const rsi = indicators?.rsi ?? 50;
+  const macd = indicators?.macd ?? 0;
+  const ema = indicators?.ema ?? price;
+
   return `You are a professional crypto trading analyst.
 
 Current BTC/USDT price: $${price}
-RSI: ${indicators?.rsi || 'N/A'}
-EMA: ${indicators?.ema || 'N/A'}
-MACD: ${indicators?.macd || 'N/A'}
-${technicalData}
+RSI: ${rsi}
+EMA: ${ema}
+MACD: ${macd}
 
 Provide a trading signal (BUY, SELL, or HOLD) with:
 - confidence (0-100)
 - brief reason (max 30 words)
 
 Respond ONLY with valid JSON:
-{"signal":"BUY","confidence":85,"reason":"Bullish breakout with volume"}`;
+{"signal":"BUY","confidence":85,"reason":"RSI oversold and MACD bullish"}`;
 }
 
 router.post('/analyze', async (req, res) => {
-  const { market, price, indicators, email, closes } = req.body;
+  const { market, price, indicators, email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
+  // ─── Always use provided indicators, never say insufficient ────
+  const rsi = indicators?.rsi ?? 50;
+  const macd = indicators?.macd ?? 0;
+  const ema = indicators?.ema ?? price;
+
+  // ─── Quick rule-based signal (always returns something) ────────
+  let quickSignal = 'HOLD';
+  let quickConfidence = 30;
+  let quickReason = 'No clear signal';
+
+  if (rsi < 30) {
+    quickSignal = 'BUY';
+    quickConfidence = 70 + (30 - rsi);
+    quickReason = `RSI oversold (${rsi.toFixed(1)})`;
+  } else if (rsi > 70) {
+    quickSignal = 'SELL';
+    quickConfidence = 70 + (rsi - 70);
+    quickReason = `RSI overbought (${rsi.toFixed(1)})`;
+  } else if (rsi < 45) {
+    quickSignal = 'BUY';
+    quickConfidence = 50 + (45 - rsi);
+    quickReason = `RSI low (${rsi.toFixed(1)})`;
+  } else if (rsi > 55) {
+    quickSignal = 'SELL';
+    quickConfidence = 50 + (rsi - 55);
+    quickReason = `RSI high (${rsi.toFixed(1)})`;
+  }
+
+  if (macd > 0 && quickSignal === 'BUY') {
+    quickConfidence += 10;
+    quickReason += ', MACD bullish';
+  } else if (macd < 0 && quickSignal === 'SELL') {
+    quickConfidence += 10;
+    quickReason += ', MACD bearish';
+  }
+
+  quickConfidence = Math.min(quickConfidence, 100);
+  quickConfidence = Math.max(quickConfidence, 20);
+
   try {
-    console.log('[AI] NVIDIA AI analysing...');
-    const prompt = buildPrompt(price, indicators, closes);
+    console.log('[AI] Querying NVIDIA models...');
+    const prompt = buildPrompt(price, indicators);
     const results = await Promise.allSettled(
       MODELS.map(model => queryNvidiaModel(model, prompt))
     );
@@ -84,31 +121,35 @@ router.post('/analyze', async (req, res) => {
       .filter(r => r.status === 'fulfilled' && r.value.success)
       .map(r => r.value.data);
 
-    if (successful.length === 0) {
-      return res.json({ signal: 'HOLD', confidence: 30, reason: 'NVIDIA models unavailable' });
+    if (successful.length > 0) {
+      const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
+      successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
+      const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
+      const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
+      const reasons = successful.map(d => d.reason);
+
+      return res.json({
+        signal: finalSignal,
+        confidence: avgConfidence,
+        reason: `NVIDIA AI: ${reasons.join(' ')}`,
+        breakdown: successful.map((d, i) => ({
+          model: MODELS[i] || 'unknown',
+          signal: d.signal,
+          confidence: d.confidence,
+          reason: d.reason,
+        })),
+      });
     }
-
-    const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
-    successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
-    const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
-    const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
-    const reasons = successful.map(d => d.reason);
-
-    res.json({
-      signal: finalSignal,
-      confidence: avgConfidence,
-      reason: `NVIDIA AI: ${reasons.join(' ')}`,
-      breakdown: successful.map((d, i) => ({
-        model: MODELS[i] || 'unknown',
-        signal: d.signal,
-        confidence: d.confidence,
-        reason: d.reason,
-      })),
-    });
   } catch (error) {
-    console.error('[AI] Error:', error.message);
-    res.json({ signal: 'HOLD', confidence: 30, reason: 'AI error: ' + error.message });
+    console.error('[AI] NVIDIA error:', error.message);
   }
+
+  // ─── Always return SOMETHING – never "insufficient data" ──────
+  return res.json({
+    signal: quickSignal,
+    confidence: quickConfidence,
+    reason: `Fallback: ${quickReason}`,
+  });
 });
 
 router.get('/status', async (req, res) => {
