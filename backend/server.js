@@ -33,6 +33,7 @@ function safeRequire(routePath) {
 }
 
 const app = express();
+const binanceRoutes = require("./routes/binance");
 const PORT = process.env.PORT || 3000;
 
 // ─── Trust proxy (fixes rate limiter warning) ────────────────────
@@ -41,6 +42,7 @@ app.set('trust proxy', 1);
 app.use(cors());
 app.use(compression());
 app.use(express.json());
+app.use("/api/binance", binanceRoutes);
 app.use('/api', limiter);
 
 // API routes
