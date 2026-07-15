@@ -42,6 +42,7 @@ app.use('/api/bot', loadRoute('./routes/bot'));
 app.use('/api/admin', loadRoute('./routes/admin'));
 app.use('/api/trades', loadRoute('./routes/trades'));
 app.use('/api/agent', loadRoute('./routes/agent'));
+app.use("/api/backtest", safeRequire("./routes/backtest"));
 app.use('/api/backtest', loadRoute('./routes/backtest'));
 app.use('/api/user', loadRoute('./routes/user'));
 
