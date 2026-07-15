@@ -155,47 +155,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   );
 }
 
-function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode }) {
-  const [messages, setMessages] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_messages')) || []; } catch { return []; } });
-  const [price, setPrice] = useState(() => { try { return parseFloat(localStorage.getItem('hila_price')) || null; } catch { return null; } });
-  const [priceHistory, setPriceHistory] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_priceHistory')) || []; } catch { return []; } });
-  const [signalHistory, setSignalHistory] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_signalHistory')) || []; } catch { return []; } });
-  const [tickCount, setTickCount] = useState(() => { try { return parseInt(localStorage.getItem('hila_tickCount')) || 0; } catch { return 0; } });
-  const [paperBalance, setPaperBalance] = useState(() => { try { return parseFloat(localStorage.getItem('hila_paperBalance')) || null; } catch { return null; } });
-  const [currentSignal, setCurrentSignal] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_currentSignal')) || { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } catch { return { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } });
-  const [analyzing, setAnalyzing] = useState(false);
-  const [agentRunning, setAgentRunning] = useState(false);
-  const scrollRef = useRef(null);
-  const wsRef = useRef(null);
-  const lastPriceRef = useRef(null);
-
-  useEffect(() => localStorage.setItem('hila_messages', JSON.stringify(messages)), [messages]);
-  useEffect(() => localStorage.setItem('hila_price', price !== null ? String(price) : ''), [price]);
-  useEffect(() => localStorage.setItem('hila_priceHistory', JSON.stringify(priceHistory)), [priceHistory]);
-  useEffect(() => localStorage.setItem('hila_signalHistory', JSON.stringify(signalHistory)), [signalHistory]);
-  useEffect(() => localStorage.setItem('hila_tickCount', String(tickCount)), [tickCount]);
-  useEffect(() => { if (paperBalance !== null) localStorage.setItem('hila_paperBalance', String(paperBalance)); }, [paperBalance]);
-  useEffect(() => localStorage.setItem('hila_currentSignal', JSON.stringify(currentSignal)), [currentSignal]);
-
-  useEffect(() => {
-    const sym = selectedSymbol.toLowerCase().replace('/', '').replace('usdt', 'usdt@trade');
-    const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
-    wsRef.current = new WebSocket(wsUrl);
-    wsRef.current.onmessage = (e) => {
-      const data = JSON.parse(e.data);
-      if (data.p) {
-        const newPrice = parseFloat(data.p);
-        setPrice(newPrice);
-        setTickCount(prev => prev + 1);
-        setPriceHistory(prev => { const u = [...prev, newPrice]; return u.slice(-50); });
-        if (priceHistory.length > 10 && lastPriceRef.current !== newPrice) {
-          lastPriceRef.current = newPrice;
-          runAnalysis(newPrice);
-        }
-      }
-    };
-    return () => wsRef.current?.close();
-  }, [selectedSymbol]);
+, [selectedSymbol]);
 
   useEffect(() => {
     const interval = setInterval(() => {

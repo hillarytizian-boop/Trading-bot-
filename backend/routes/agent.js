@@ -6,3 +6,5 @@ router.post('/manual-trade', (req, res) => res.json({ success: true }));
 module.exports = router;
 // ─── Additional logging for debugging ──────────────────────────────
 console.log('[Agent] Confidence threshold set to 50%');
+// ─── Additional logging for debugging ──────────────────────────────
+console.log('[Agent] Confidence threshold set to 50%');
