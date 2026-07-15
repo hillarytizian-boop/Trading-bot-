@@ -1,69 +1,67 @@
-const compression = require("compression");
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const rateLimit = require('express-rate-limit');
-
-// ─── Environment validation ──────────────────────────────────────
-const REQUIRED_ENV = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'NVIDIA_GLM_API_KEY', 'NVIDIA_DEEPSEEK_API_KEY'];
-const missing = REQUIRED_ENV.filter(k => !process.env[k]);
-if (missing.length) {
-  console.error('❌ Missing required env vars:', missing.join(', '));
-  process.exit(1);
-}
-
-// ─── Rate limiting ──────────────────────────────────────────────
-const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 100,
-  message: { error: 'Too many requests, please try again later.' },
-  skip: (req) => req.path === '/api/health', // skip health checks
-});
-
-function safeRequire(routePath) {
-  try {
-    const module = require(routePath);
-    if (typeof module === 'function') return module;
-    if (module && typeof module === 'object' && module.router) return module.router;
-    return (req, res) => res.status(501).json({ error: `${routePath} not implemented` });
-  } catch (e) {
-    console.warn(`⚠️ Route ${routePath} not found – using fallback`);
-    return (req, res) => res.status(501).json({ error: `${routePath} not available` });
-  }
-}
+const compression = require('compression');
 
 const app = express();
-const binanceRoutes = require("./routes/binance");
 const PORT = process.env.PORT || 3000;
-
-// ─── Trust proxy (fixes rate limiter warning) ────────────────────
-app.set('trust proxy', 1);
 
 app.use(cors());
 app.use(compression());
 app.use(express.json());
-app.use("/api/binance", binanceRoutes);
-app.use('/api', limiter);
 
-// API routes
-app.use('/api/auth', safeRequire('./routes/auth'));
-app.use('/api/binance', safeRequire('./routes/binance'));
-app.use('/api/ai', safeRequire('./routes/ai'));
-app.use('/api/bot', safeRequire('./routes/bot'));
-app.use('/api/admin', safeRequire('./routes/admin'));
-app.use('/api/trades', safeRequire('./routes/trades'));
-app.use('/api/agent', safeRequire('./routes/agent'));
-app.use("/api/backtest", safeRequire("./routes/backtest"));
-app.use("/api/user", safeRequire("./routes/user"));
-app.use('/api/backtest', safeRequire('./routes/backtest'));
+// ─── Import routes ──────────────────────────────────────────────
+const authRoutes = require('./routes/auth');
+const binanceRoutes = require('./routes/binance');
+const aiRoutes = require('./routes/ai');
+const botRoutes = require('./routes/bot');
+const adminRoutes = require('./routes/admin');
+const tradeRoutes = require('./routes/trades');
+const agentRoutes = require('./routes/agent');
+const backtestRoutes = require('./routes/backtest');
+const userRoutes = require('./routes/user');
+
+// ─── Mount routes ──────────────────────────────────────────────
+app.use('/api/auth', authRoutes);
+app.use('/api/binance', binanceRoutes);
+app.use('/api/ai', aiRoutes);
+app.use('/api/bot', botRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/trades', tradeRoutes);
+app.use('/api/agent', agentRoutes);
+app.use('/api/backtest', backtestRoutes);
+app.use('/api/user', userRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
-// Serve static frontend
+// ─── DEBUG: Print all registered routes ──────────────────────
+console.log('✅ Registered API routes:');
+app._router.stack.forEach((layer) => {
+  if (layer.route) {
+    console.log(`  ${Object.keys(layer.route.methods).join(',')} ${layer.route.path}`);
+  } else if (layer.name === 'router' && layer.regexp) {
+    // For mounted routers, print their child routes
+    const basePath = layer.regexp.source
+      .replace(/\\\//g, '/')
+      .replace(/\^/g, '')
+      .replace(/\?/g, '')
+      .replace(/\(\?:\(\[\^\\\/\]\+\?\)\)/g, ':param');
+    layer.handle.stack.forEach((handler) => {
+      if (handler.route) {
+        const methods = Object.keys(handler.route.methods).join(',');
+        const fullPath = basePath + handler.route.path;
+        console.log(`  ${methods} ${fullPath}`);
+      }
+    });
+  }
+});
+console.log('✅ Route listing complete.\n');
+
+// ─── Serve static frontend ─────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
-// Catch‑all for SPA
+// ─── Catch‑all for SPA ────────────────────────────────────────
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });
