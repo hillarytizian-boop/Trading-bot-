@@ -1,3 +1,4 @@
+console.log("🚀 Hila Bot frontend loaded");
 import { useState, useEffect, useRef } from "react";
 import Chart from "./Chart";
 import Dashboard from "./Dashboard";
@@ -432,3 +433,4 @@ export default function HilaBotMiniApp() {
     </div>
   );
 }
+export default HilaBotMiniApp;
