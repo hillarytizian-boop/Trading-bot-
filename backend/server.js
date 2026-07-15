@@ -1,4 +1,3 @@
-const { spawn } = require('child_process');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -6,9 +5,6 @@ const compression = require('compression');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// ─── Start Python agent service ──────────────────────────────────
-});
 
 app.use(cors());
 app.use(compression());
