@@ -1,3 +1,4 @@
+console.log("🚀 Hila Bot frontend loaded");
 import React, { useState, useEffect, useRef, lazy, Suspense, useMemo, useCallback } from "react";
 
 // ─── Lazy load heavy components ──────────────────────────────────────
@@ -507,3 +508,4 @@ export default function HilaBotMiniApp() {
     </div>
   );
 }
+export default HilaBotMiniApp;
