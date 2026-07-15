@@ -8,17 +8,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ─── Start Python agent service ──────────────────────────────────
-console.log('🐍 Starting Python agent service...');
-const pythonProcess = spawn('./backend/agents_py/start.sh', [], {
-  detached: false,
-  stdio: 'inherit',
-  shell: true,
-});
-pythonProcess.on('error', (err) => {
-  console.error('Python agent error:', err);
-});
-pythonProcess.on('exit', (code) => {
-  console.log(`Python agent exited with code ${code}`);
 });
 
 app.use(cors());
