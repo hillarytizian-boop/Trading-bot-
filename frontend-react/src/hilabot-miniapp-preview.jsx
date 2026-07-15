@@ -1,18 +1,13 @@
-console.log("🚀 Hila Bot frontend loaded");
-import React, { useState, useEffect, useRef, lazy, Suspense, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
+import Chart from "./Chart";
+import Dashboard from "./Dashboard";
+import Backtest from "./Backtest";
 
-// ─── Lazy load heavy components ──────────────────────────────────────
-const Chart = lazy(() => import("./Chart"));
-const Dashboard = lazy(() => import("./Dashboard"));
-const Backtest = lazy(() => import("./Backtest"));
-
-// ─── Constants ────────────────────────────────────────────────────────
 const TG_BLUE = "#2AABEE", DARK_BG = "#0E1621", DARK_PANEL = "#17212B";
 const DARK_BORDER = "rgba(255,255,255,0.07)", TEXT = "#E7ECF0", MUTED = "#6C7883";
 const GREEN = "#4FCE5D", RED = "#FF5E5E", GOLD = "#F0B429", sysFont = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const CURRENT_USER = { name: "Demo Trader", email: "demo@example.com", role: "user" };
 
-// ─── Helper Components ────────────────────────────────────────────────
 function pill(c) { return { background: `${c}1f`, color: c, border: `1px solid ${c}55`, borderRadius: 20, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }; }
 function Dot({ d }) { return <span style={{ width: 6, height: 6, borderRadius: "50%", background: MUTED, display: "inline-block", animation: "tgBounce 1.2s infinite", animationDelay: `${d}s` }} />; }
 function SignalChip({ signal, confidence, risk }) {
@@ -24,7 +19,6 @@ function TgSwitch({ checked, onChange }) { return ( <div onClick={() => onChange
 function TgListRow({ icon, label, sub, right, onClick, last }) { return ( <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 13, padding: "12px 16px", cursor: onClick ? "pointer" : "default", borderBottom: last ? "none" : `1px solid ${DARK_BORDER}` }}> <div style={{ width: 32, height: 32, borderRadius: 9, background: "rgba(42,171,238,0.12)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{icon}</div> <div style={{ flex: 1, minWidth: 0 }}> <p style={{ fontSize: 14, lineHeight: 1.2 }}>{label}</p> {sub && <p style={{ fontSize: 11.5, color: MUTED, marginTop: 1 }}>{sub}</p>} </div> {right} </div> ); }
 function Chevron() { return <span style={{ color: MUTED, fontSize: 16 }}>›</span>; }
 
-// ─── AppHeader ────────────────────────────────────────────────────────
 function AppHeader({ onOpenSettings, binanceConnected }) {
   return (
     <div style={{ height: 56, background: DARK_PANEL, borderBottom: `1px solid ${DARK_BORDER}`, display: "flex", alignItems: "center", padding: "0 14px", flexShrink: 0, position: "relative" }}>
@@ -40,9 +34,7 @@ function AppHeader({ onOpenSettings, binanceConnected }) {
   );
 }
 
-// ─── SettingsDrawer ──────────────────────────────────────────────────
 function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
-  // ... (same as before, but we'll keep it minimal)
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [localEmail, setLocalEmail] = useState(email || '');
@@ -57,7 +49,21 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const isConnected = binance?.connected || false;
   const displayBalance = binance?.balance || '0.00';
 
-  
+  const saveBinanceKeys = async () => {
+    if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
+    setStatus('connecting');
+    try {
+      const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
+      const data = await res.json();
+      if (res.ok) {
+        setStatus('connected');
+        onBinanceConnect(localEmail);
+        const balRes = await fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`);
+        const balData = await balRes.json();
+        if (balRes.ok) setBalance(balData.balance || '0.00');
+      } else { setStatus('error'); alert('Failed to connect: ' + data.error); }
+    } catch (err) { setStatus('error'); alert('Network error: ' + err.message); }
+  };
 
   useEffect(() => {
     if (open && localEmail) {
@@ -149,20 +155,70 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   );
 }
 
-// ─── Placeholder Chart (shown while lazy component loads) ──────────
-function ChartPlaceholder({ price }) {
-  return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', color: MUTED, fontSize: 14 }}>
-      {price ? `$${price.toFixed(2)}` : 'Loading chart...'}
-    </div>
-  );
-}
+function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode }) {
+  // ─── Persisted state ──────────────────────────────────────────────────
+  const [messages, setMessages] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_messages')) || []; } catch { return []; }
+  });
+  const [price, setPrice] = useState(() => {
+    try { return parseFloat(localStorage.getItem('hila_price')) || null; } catch { return null; }
+  });
+  const [priceHistory, setPriceHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_priceHistory')) || []; } catch { return []; }
+  });
+  const [signalHistory, setSignalHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_signalHistory')) || []; } catch { return []; }
+  });
+  const [tickCount, setTickCount] = useState(() => {
+    try { return parseInt(localStorage.getItem('hila_tickCount')) || 0; } catch { return 0; }
+  });
+  const [paperBalance, setPaperBalance] = useState(() => {
+    try { return parseFloat(localStorage.getItem('hila_paperBalance')) || null; } catch { return null; }
+  });
+  const [currentSignal, setCurrentSignal] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_currentSignal')) || { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } catch { return { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; }
+  });
+  const [analyzing, setAnalyzing] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const scrollRef = useRef(null);
+  const wsRef = useRef(null);
+  const lastPriceRef = useRef(null);
 
-// ─── SignalsScreen (main trading screen) ────────────────────────────
-;
+  // ─── Persist to localStorage ──────────────────────────────────────────
+  useEffect(() => localStorage.setItem('hila_messages', JSON.stringify(messages)), [messages]);
+  useEffect(() => localStorage.setItem('hila_price', price !== null ? String(price) : ''), [price]);
+  useEffect(() => localStorage.setItem('hila_priceHistory', JSON.stringify(priceHistory)), [priceHistory]);
+  useEffect(() => localStorage.setItem('hila_signalHistory', JSON.stringify(signalHistory)), [signalHistory]);
+  useEffect(() => localStorage.setItem('hila_tickCount', String(tickCount)), [tickCount]);
+  useEffect(() => { if (paperBalance !== null) localStorage.setItem('hila_paperBalance', String(paperBalance)); }, [paperBalance]);
+  useEffect(() => localStorage.setItem('hila_currentSignal', JSON.stringify(currentSignal)), [currentSignal]);
+
+  // ─── WebSocket ──────────────────────────────────────────────────
+  useEffect(() => {
+    const sym = selectedSymbol.toLowerCase().replace('/', '').replace('usdt', 'usdt@trade');
+    const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
+    wsRef.current = new WebSocket(wsUrl);
+    wsRef.current.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.p) {
+        const newPrice = parseFloat(data.p);
+        setPrice(newPrice);
+        setTickCount(prev => prev + 1);
+        setPriceHistory(prev => {
+          const u = [...prev, newPrice];
+          return u.slice(-50);
+        });
+        // ─── AUTO‑ANALYSE ON EVERY TICK ────────────────────────
+        if (priceHistory.length > 10 && lastPriceRef.current !== newPrice) {
+          lastPriceRef.current = newPrice;
+          runAnalysis(newPrice);
+        }
+      }
+    };
+    return () => wsRef.current?.close();
   }, [selectedSymbol]);
 
-  // ─── Agent status polling (less frequent) ────────────────────────
+  // ─── Agent status ──────────────────────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
       fetch('/api/agent/status')
@@ -176,12 +232,12 @@ function ChartPlaceholder({ price }) {
     return () => clearInterval(interval);
   }, []);
 
-  // ─── Auto-scroll ───────────────────────────────────────────────────
+  // ─── Scroll ────────────────────────────────────────────────────
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
-  // ─── Analysis functions ────────────────────────────────────────────
+  // ─── Indicators ────────────────────────────────────────────────
   function calcIndicators(prices) {
     if (prices.length < 10) return { rsi: 50, ema: prices[prices.length-1] || 0, macd: 0 };
     const gains = [], losses = [];
@@ -200,7 +256,8 @@ function ChartPlaceholder({ price }) {
     return { rsi: Math.round(rsi), ema: Math.round(ema), macd: parseFloat(macd.toFixed(4)) };
   }
 
-  const runAnalysis = useCallback(async (currentPrice) => {
+  // ─── Analysis ──────────────────────────────────────────────────
+  const runAnalysis = async (currentPrice) => {
     if (analyzing || !currentPrice || priceHistory.length < 10) return;
     setAnalyzing(true);
     try {
@@ -218,11 +275,10 @@ function ChartPlaceholder({ price }) {
       const data = await res.json();
       setCurrentSignal(data);
       const emoji = data.signal === 'BUY' ? '🚀' : data.signal === 'SELL' ? '🔻' : '⏳';
-      const confEmoji = data.confidence >= 80 ? '🔥' : data.confidence >= 60 ? '💡' : '📊';
       setMessages(prev => [...prev, {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
-        text: `${emoji} ${data.signal} ${confEmoji} ${data.confidence}% · $${currentPrice.toFixed(2)}`,
+        text: `${emoji} ${data.signal} (${data.confidence}%) · $${currentPrice.toFixed(2)}`,
         signal: data,
         reason: data.reason,
       }]);
@@ -232,16 +288,9 @@ function ChartPlaceholder({ price }) {
       });
     } catch (e) { console.error('Analysis error:', e); }
     setAnalyzing(false);
-  }, [selectedSymbol, priceHistory, analyzing]);
+  };
 
-  // ─── Auto-analyze when price updates ─────────────────────────────
-  useEffect(() => {
-    if (price && agentRunning) {
-      runAnalysis(price);
-    }
-  }, [price, agentRunning, runAnalysis]);
-
-  // ─── Manual analysis ──────────────────────────────────────────────
+  // ─── Manual ──────────────────────────────────────────────────
   const runManual = async () => {
     if (!price) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
     setAnalyzing(true);
@@ -262,7 +311,7 @@ function ChartPlaceholder({ price }) {
       setMessages(prev => [...prev, {
         type: 'bot',
         time: new Date().toLocaleTimeString(),
-        text: '📊 Manual Analysis:',
+        text: '📊 Manual:',
         signal: data,
         reason: data.reason,
       }]);
@@ -285,7 +334,6 @@ function ChartPlaceholder({ price }) {
     } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]); }
   };
 
-  // ─── Render ────────────────────────────────────────────────────────
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", background: DARK_BG }}>
       <div style={{ flexShrink: 0, padding: "10px 14px", display: "flex", gap: 8, overflowX: "auto" }}>
@@ -299,9 +347,7 @@ function ChartPlaceholder({ price }) {
           <span style={{ fontSize: 11, color: MUTED }}>AI Market Chart</span>
           <span style={{ fontSize: 11, color: MUTED }}>{price ? `$${price.toFixed(2)}` : "Loading..."}</span>
         </div>
-        <Suspense fallback={<ChartPlaceholder price={price} />}>
-          {chartReady && <Chart priceHistory={priceHistory} signals={signalHistory} />}
-        </Suspense>
+        <Chart priceHistory={priceHistory} signals={signalHistory} />
       </div>
       {!binance.connected && (
         <div onClick={onOpenSettings} style={{ flexShrink: 0, margin: "0 14px 10px", background: "rgba(240,180,41,0.1)", border: "1px solid rgba(240,180,41,0.3)", borderRadius: 12, padding: "10px 14px", fontSize: 12.5, color: GOLD, cursor: "pointer", display: "flex", justifyContent: "space-between" }}>
@@ -358,13 +404,11 @@ function StatChip({ label, value, color, dot }) {
   );
 }
 
-// ─── Trades, History, Profile, Admin (lightweight) ──────────────────
 function TradesScreen() { return <div style={{ padding: 16, color: MUTED }}>Trades (real data from Supabase)</div>; }
 function HistoryScreen() { return <div style={{ padding: 16, color: MUTED }}>History (real data from Supabase)</div>; }
 function ProfileScreen({ user, binance, onOpenSettings }) { return <div style={{ padding: 16, color: MUTED }}>Profile</div>; }
 function AdminScreen() { return <div style={{ padding: 16, color: MUTED }}>Admin</div>; }
 
-// ─── BottomNav ──────────────────────────────────────────────────────
 function BottomNav({ tab, setTab, isAdmin }) {
   const tabs = [
     { id: "signals", icon: "💬", label: "Signals" },
@@ -387,7 +431,6 @@ function BottomNav({ tab, setTab, isAdmin }) {
   );
 }
 
-// ─── Root App ──────────────────────────────────────────────────────
 export default function HilaBotMiniApp() {
   const [tab, setTab] = useState("signals");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -442,11 +485,11 @@ export default function HilaBotMiniApp() {
 
   const screens = {
     signals: <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} />,
-    dashboard: <Suspense fallback={<div style={{ padding: 16, color: MUTED }}>Loading Dashboard...</div>}><Dashboard binance={binance} email={CURRENT_USER.email} /></Suspense>,
+    dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
     profile: <ProfileScreen user={CURRENT_USER} binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
-    backtest: <Suspense fallback={<div style={{ padding: 16, color: MUTED }}>Loading Backtest...</div>}><Backtest /></Suspense>,
+    backtest: <Backtest />,
     admin: isAdmin ? <AdminScreen /> : <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} />,
   };
 
@@ -460,4 +503,3 @@ export default function HilaBotMiniApp() {
     </div>
   );
 }
-export default HilaBotMiniApp;
