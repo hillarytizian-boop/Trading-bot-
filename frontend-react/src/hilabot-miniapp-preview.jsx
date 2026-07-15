@@ -34,7 +34,7 @@ function AppHeader({ onOpenSettings, binanceConnected }) {
   );
 }
 
-function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
+const SettingsDrawer = React.memo(function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [localEmail, setLocalEmail] = useState(email || '');
@@ -50,11 +50,17 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const displayBalance = binance?.balance || '0.00';
 
   const saveBinanceKeys = async () => {
+    console.log("🔑 Attempting to connect Binance for:", localEmail || email);
     if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
     setStatus('connecting');
     try {
-      const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
+      const res = await fetch("/api/binance/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: localEmail || email, apiKey: apiKey.trim(), secretKey: apiSecret.trim() }),
+      });
       const data = await res.json();
+    console.log("📡 Binance response:", data);
       if (res.ok) {
         setStatus('connected');
         onBinanceConnect(localEmail);
@@ -274,9 +280,12 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         }),
       });
       const data = await res.json();
+    console.log("📡 Binance response:", data);
       setCurrentSignal(data);
       const emoji = data.signal === 'BUY' ? '🚀' : data.signal === 'SELL' ? '🔻' : '⏳';
-      setMessages(prev => [...prev, {
+      setMessages(prev => { const newMsgs = [...prev, {
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: `${emoji} ${data.signal} (${data.confidence}%) · $${currentPrice.toFixed(2)}`,
@@ -293,7 +302,9 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
 
   // ─── Manual ──────────────────────────────────────────────────
   const runManual = async () => {
-    if (!price) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
+    if (!price) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
@@ -309,15 +320,20 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         }),
       });
       const data = await res.json();
+    console.log("📡 Binance response:", data);
       setCurrentSignal(data);
-      setMessages(prev => [...prev, {
+      setMessages(prev => { const newMsgs = [...prev, {
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
         type: 'bot',
         time: new Date().toLocaleTimeString(),
         text: '📊 Manual:',
         signal: data,
         reason: data.reason,
       }]);
-    } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Analysis failed.' }]); }
+    } catch (e) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '❌ Analysis failed.' }]); }
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
     setAnalyzing(false);
   };
 
@@ -325,15 +341,25 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     try {
       const res = await fetch('/api/agent/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email }) });
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
-    } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]); }
+    console.log("📡 Binance response:", data);
+      setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: `🤖 Agent ${data.status}` }]);
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
+    } catch (e) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '❌ Failed to start agent.' }]); }
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
   };
   const stopAgent = async () => {
     try {
       const res = await fetch('/api/agent/stop', { method: 'POST' });
       const data = await res.json();
-      setMessages(prev => [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
-    } catch (e) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]); }
+    console.log("📡 Binance response:", data);
+      setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: `⏹ Agent ${data.status}` }]);
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
+    } catch (e) { setMessages(prev => { const newMsgs = [...prev, { type: 'bot', time: 'now', text: '❌ Failed to stop agent.' }]); }
+      if (newMsgs.length > 30) newMsgs.shift();
+      return newMsgs;
   };
 
   return (
