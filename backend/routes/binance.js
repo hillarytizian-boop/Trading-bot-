@@ -2,28 +2,50 @@ const router = require('express').Router();
 const supabase = require('../db');
 const Binance = require('binance-api-node').default;
 
-// ─── Connect: save API keys (encrypted in production) ──────────────
+// ─── Connect: save and test API keys ──────────────────────────────
 router.post('/connect', async (req, res) => {
   const { email, apiKey, secretKey } = req.body;
+  console.log('[Binance] Connect attempt for:', email);
+  console.log('[Binance] API Key length:', apiKey?.length);
+  console.log('[Binance] Secret Key length:', secretKey?.length);
+
   if (!email || !apiKey || !secretKey) {
     return res.status(400).json({ error: 'Missing email, apiKey, or secretKey' });
   }
-  // Test keys before saving
+
   try {
-    const client = Binance({ apiKey, secretKey });
-    await client.accountInfo(); // throws if invalid
+    // Test the keys before saving
+    const client = Binance({
+      apiKey: apiKey.trim(),
+      secretKey: secretKey.trim(),
+    });
+    console.log('[Binance] Testing keys...');
+    const account = await client.accountInfo();
+    console.log('[Binance] Keys are valid. Account:', account.accountType);
   } catch (err) {
+    console.error('[Binance] Invalid keys:', err.message);
     return res.status(400).json({ error: 'Invalid Binance API keys: ' + err.message });
   }
+
+  // Save keys to Supabase
   const { error } = await supabase
     .from('users')
-    .update({ binance_api_key: apiKey, binance_secret_key: secretKey })
+    .update({
+      binance_api_key: apiKey.trim(),
+      binance_secret_key: secretKey.trim(),
+    })
     .eq('email', email);
-  if (error) return res.status(500).json({ error: error.message });
+
+  if (error) {
+    console.error('[Binance] Supabase error:', error);
+    return res.status(500).json({ error: error.message });
+  }
+
+  console.log('[Binance] Keys saved successfully for', email);
   res.json({ success: true, message: 'Keys saved and verified' });
 });
 
-// ─── Disconnect: remove keys ──────────────────────────────────────────
+// ─── Disconnect: remove keys ──────────────────────────────────────
 router.post('/disconnect', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
@@ -34,20 +56,20 @@ router.post('/disconnect', async (req, res) => {
   res.json({ success: true, message: 'Disconnected' });
 });
 
-// ─── Status: check if connected ──────────────────────────────────────
+// ─── Status: check if connected ──────────────────────────────────
 router.get('/status', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Missing email' });
   const { data, error } = await supabase
     .from('users')
-    .select('binance_api_key')
+    .select('binance_api_key, binance_secret_key')
     .eq('email', email)
     .single();
   if (error || !data?.binance_api_key) return res.json({ connected: false });
   return res.json({ connected: true });
 });
 
-// ─── Balance: real USDT balance ──────────────────────────────────────
+// ─── Balance: real USDT balance ──────────────────────────────────
 router.get('/balance', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Missing email' });
@@ -60,7 +82,10 @@ router.get('/balance', async (req, res) => {
     return res.status(401).json({ error: 'Binance not connected' });
   }
   try {
-    const client = Binance({ apiKey: data.binance_api_key, secretKey: data.binance_secret_key });
+    const client = Binance({
+      apiKey: data.binance_api_key,
+      secretKey: data.binance_secret_key,
+    });
     const account = await client.accountInfo();
     const usdt = account.balances.find(b => b.asset === 'USDT');
     const balance = usdt ? parseFloat(usdt.free).toFixed(2) : '0.00';
