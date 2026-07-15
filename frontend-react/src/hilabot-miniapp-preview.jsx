@@ -262,6 +262,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
+    console.log("[Frontend] Indicators:", ind);
       const res = await fetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -296,6 +297,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     setAnalyzing(true);
     try {
       const ind = calcIndicators(priceHistory);
+    console.log("[Frontend] Indicators:", ind);
       const res = await fetch('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
