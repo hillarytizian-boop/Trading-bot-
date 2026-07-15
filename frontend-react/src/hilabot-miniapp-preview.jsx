@@ -1,4 +1,3 @@
-console.log("🚀 Hila Bot frontend loaded");
 import { useState, useEffect, useRef } from "react";
 import Chart from "./Chart";
 import Dashboard from "./Dashboard";
@@ -156,8 +155,70 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   );
 }
 
-, [selectedSymbol]);
+function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode }) {
+  // ─── Persisted state ──────────────────────────────────────────────────
+  const [messages, setMessages] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_messages')) || []; } catch { return []; }
+  });
+  const [price, setPrice] = useState(() => {
+    try { return parseFloat(localStorage.getItem('hila_price')) || null; } catch { return null; }
+  });
+  const [priceHistory, setPriceHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_priceHistory')) || []; } catch { return []; }
+  });
+  const [signalHistory, setSignalHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_signalHistory')) || []; } catch { return []; }
+  });
+  const [tickCount, setTickCount] = useState(() => {
+    try { return parseInt(localStorage.getItem('hila_tickCount')) || 0; } catch { return 0; }
+  });
+  const [paperBalance, setPaperBalance] = useState(() => {
+    try { return parseFloat(localStorage.getItem('hila_paperBalance')) || null; } catch { return null; }
+  });
+  const [currentSignal, setCurrentSignal] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('hila_currentSignal')) || { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } catch { return { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; }
+  });
+  const [analyzing, setAnalyzing] = useState(false);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const scrollRef = useRef(null);
+  const wsRef = useRef(null);
+  const lastPriceRef = useRef(null);
 
+  // ─── Persist to localStorage ──────────────────────────────────────────
+  useEffect(() => localStorage.setItem('hila_messages', JSON.stringify(messages)), [messages]);
+  useEffect(() => localStorage.setItem('hila_price', price !== null ? String(price) : ''), [price]);
+  useEffect(() => localStorage.setItem('hila_priceHistory', JSON.stringify(priceHistory)), [priceHistory]);
+  useEffect(() => localStorage.setItem('hila_signalHistory', JSON.stringify(signalHistory)), [signalHistory]);
+  useEffect(() => localStorage.setItem('hila_tickCount', String(tickCount)), [tickCount]);
+  useEffect(() => { if (paperBalance !== null) localStorage.setItem('hila_paperBalance', String(paperBalance)); }, [paperBalance]);
+  useEffect(() => localStorage.setItem('hila_currentSignal', JSON.stringify(currentSignal)), [currentSignal]);
+
+  // ─── WebSocket ──────────────────────────────────────────────────
+  useEffect(() => {
+    const sym = selectedSymbol.toLowerCase().replace('/', '').replace('usdt', 'usdt@trade');
+    const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
+    wsRef.current = new WebSocket(wsUrl);
+    wsRef.current.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.p) {
+        const newPrice = parseFloat(data.p);
+        setPrice(newPrice);
+        setTickCount(prev => prev + 1);
+        setPriceHistory(prev => {
+          const u = [...prev, newPrice];
+          return u.slice(-50);
+        });
+        // ─── AUTO‑ANALYSE ON EVERY TICK ────────────────────────
+        if (priceHistory.length > 10 && lastPriceRef.current !== newPrice) {
+          lastPriceRef.current = newPrice;
+          runAnalysis(newPrice);
+        }
+      }
+    };
+    return () => wsRef.current?.close();
+  }, [selectedSymbol]);
+
+  // ─── Agent status ──────────────────────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
       fetch('/api/agent/status')
@@ -171,8 +232,12 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
+  // ─── Scroll ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
 
+  // ─── Indicators ────────────────────────────────────────────────
   function calcIndicators(prices) {
     if (prices.length < 10) return { rsi: 50, ema: prices[prices.length-1] || 0, macd: 0 };
     const gains = [], losses = [];
@@ -191,6 +256,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     return { rsi: Math.round(rsi), ema: Math.round(ema), macd: parseFloat(macd.toFixed(4)) };
   }
 
+  // ─── Analysis ──────────────────────────────────────────────────
   const runAnalysis = async (currentPrice) => {
     if (analyzing || !currentPrice || priceHistory.length < 10) return;
     setAnalyzing(true);
@@ -216,11 +282,15 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
         signal: data,
         reason: data.reason,
       }]);
-      setSignalHistory(prev => { const u = [...prev, { signal: data.signal, confidence: data.confidence, price: currentPrice, time: new Date().toISOString() }]; return u.slice(-30); });
+      setSignalHistory(prev => {
+        const u = [...prev, { signal: data.signal, confidence: data.confidence, price: currentPrice, time: new Date().toISOString() }];
+        return u.slice(-30);
+      });
     } catch (e) { console.error('Analysis error:', e); }
     setAnalyzing(false);
   };
 
+  // ─── Manual ──────────────────────────────────────────────────
   const runManual = async () => {
     if (!price) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
     setAnalyzing(true);
@@ -265,7 +335,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: DARK_BG, backgroundImage: "radial-gradient(circle at 30% 0%, rgba(42,171,238,0.06), transparent 45%)" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: DARK_BG }}>
       <div style={{ flexShrink: 0, padding: "10px 14px", display: "flex", gap: 8, overflowX: "auto" }}>
         <StatChip label="Bot" value={agentRunning ? "Running" : "Stopped"} color={agentRunning ? GREEN : MUTED} dot={agentRunning} />
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
@@ -433,4 +503,3 @@ export default function HilaBotMiniApp() {
     </div>
   );
 }
-export default HilaBotMiniApp;
