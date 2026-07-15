@@ -56,21 +56,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const isConnected = binance?.connected || false;
   const displayBalance = binance?.balance || '0.00';
 
-  const saveBinanceKeys = async () => {
-    if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
-    setStatus('connecting');
-    try {
-      const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
-      const data = await res.json();
-      if (res.ok) {
-        setStatus('connected');
-        onBinanceConnect(localEmail);
-        const balRes = await fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`);
-        const balData = await balRes.json();
-        if (balRes.ok) setBalance(balData.balance || '0.00');
-      } else { setStatus('error'); alert('Failed to connect: ' + data.error); }
-    } catch (err) { setStatus('error'); alert('Network error: ' + err.message); }
-  };
+  
 
   useEffect(() => {
     if (open && localEmail) {
