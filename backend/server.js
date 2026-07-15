@@ -10,36 +10,44 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 
-// ─── Import all routes (they all exist now) ──────────────────────
-const authRoutes = require('./routes/auth');
-const binanceRoutes = require('./routes/binance');
-const aiRoutes = require('./routes/ai');
-const botRoutes = require('./routes/bot');
-const adminRoutes = require('./routes/admin');
-const tradeRoutes = require('./routes/trades');
-const agentRoutes = require('./routes/agent');
-const backtestRoutes = require('./routes/backtest');
-const userRoutes = require('./routes/user');
+// ─── Helper to safely require a route ────────────────────────────
+function safeRequire(routePath) {
+  try {
+    const module = require(routePath);
+    // If it's a function, assume it's a router
+    if (typeof module === 'function') return module;
+    // If it has a router property, use that
+    if (module && module.router && typeof module.router === 'function') return module.router;
+    // If it's an object with routes, try to use it as is (some routers are objects)
+    if (module && typeof module === 'object') return module;
+    // Fallback
+    console.warn(`⚠️ Route ${routePath} is not a valid router, using fallback`);
+    return (req, res) => res.status(501).json({ error: `${routePath} not implemented` });
+  } catch (e) {
+    console.warn(`⚠️ Route ${routePath} not found, using fallback`);
+    return (req, res) => res.status(501).json({ error: `${routePath} not available` });
+  }
+}
 
 // ─── Mount routes ──────────────────────────────────────────────────
 console.log('✅ Mounting routes...');
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', safeRequire('./routes/auth'));
 console.log('  /api/auth');
-app.use('/api/binance', binanceRoutes);
+app.use('/api/binance', safeRequire('./routes/binance'));
 console.log('  /api/binance');
-app.use('/api/ai', aiRoutes);
+app.use('/api/ai', safeRequire('./routes/ai'));
 console.log('  /api/ai');
-app.use('/api/bot', botRoutes);
+app.use('/api/bot', safeRequire('./routes/bot'));
 console.log('  /api/bot');
-app.use('/api/admin', adminRoutes);
+app.use('/api/admin', safeRequire('./routes/admin'));
 console.log('  /api/admin');
-app.use('/api/trades', tradeRoutes);
+app.use('/api/trades', safeRequire('./routes/trades'));
 console.log('  /api/trades');
-app.use('/api/agent', agentRoutes);
+app.use('/api/agent', safeRequire('./routes/agent'));
 console.log('  /api/agent');
-app.use('/api/backtest', backtestRoutes);
+app.use('/api/backtest', safeRequire('./routes/backtest'));
 console.log('  /api/backtest');
-app.use('/api/user', userRoutes);
+app.use('/api/user', safeRequire('./routes/user'));
 console.log('  /api/user');
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
