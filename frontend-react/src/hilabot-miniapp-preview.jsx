@@ -159,55 +159,7 @@ function ChartPlaceholder({ price }) {
 }
 
 // ─── SignalsScreen (main trading screen) ────────────────────────────
-function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode }) {
-  // ─── Minimal state ──────────────────────────────────────────────────
-  const [messages, setMessages] = useState([]);
-  const [price, setPrice] = useState(null);
-  const [priceHistory, setPriceHistory] = useState([]);
-  const [signalHistory, setSignalHistory] = useState([]);
-  const [tickCount, setTickCount] = useState(0);
-  const [paperBalance, setPaperBalance] = useState(null);
-  const [currentSignal, setCurrentSignal] = useState({ signal: 'HOLD', confidence: 0, reason: 'Waiting...' });
-  const [analyzing, setAnalyzing] = useState(false);
-  const [agentRunning, setAgentRunning] = useState(false);
-  const [chartReady, setChartReady] = useState(false);
-  const scrollRef = useRef(null);
-  const wsRef = useRef(null);
-  const chartTimer = useRef(null);
-
-  // ─── Deferred WebSocket connection ──────────────────────────────
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const sym = selectedSymbol.toLowerCase().replace('/', '').replace('usdt', 'usdt@trade');
-      const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
-      wsRef.current = new WebSocket(wsUrl);
-      wsRef.current.onmessage = (e) => {
-        const data = JSON.parse(e.data);
-        if (data.p) {
-          const newPrice = parseFloat(data.p);
-          setPrice(newPrice);
-          setTickCount(prev => prev + 1);
-          setPriceHistory(prev => {
-            const u = [...prev, newPrice];
-            return u.slice(-50);
-          });
-          // Throttle chart updates
-          if (!chartTimer.current) {
-            chartTimer.current = setTimeout(() => {
-              setChartReady(true);
-              chartTimer.current = null;
-            }, 200);
-          }
-        }
-      };
-      wsRef.current.onopen = () => console.log('WS connected');
-      wsRef.current.onclose = () => console.log('WS disconnected');
-    }, 500); // delay to let UI paint first
-    return () => {
-      clearTimeout(timer);
-      if (wsRef.current) wsRef.current.close();
-      if (chartTimer.current) clearTimeout(chartTimer.current);
-    };
+;
   }, [selectedSymbol]);
 
   // ─── Agent status polling (less frequent) ────────────────────────
