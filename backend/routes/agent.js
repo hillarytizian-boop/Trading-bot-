@@ -1,42 +1,24 @@
-/**
- * ──────────────────────────────────────────────────────────────────────────────
- *  TRADING AGENT – WebSocket, Multi‑Asset, Adaptive Confidence
- * ──────────────────────────────────────────────────────────────────────────────
- */
-
 const router = require('express').Router();
 const supabase = require('../db');
 const { getAnalysis } = require('./ai');
 const { v4: uuidv4 } = require('uuid');
 const technical = require('technicalindicators');
-const WebSocket = require('ws');
+const Binance = require('binance-api-node').default;
 
-// ─── CONFIGURATION ──────────────────────────────────────────────────────────────
+// ─── CONFIG ──────────────────────────────────────────────────────────
 const CONFIG = {
-  timeframes: ['1m', '5m', '15m'],
-  minAgreement: 2,
-  trendEmaPeriods: [50, 100, 200],
-  rsiPeriod: 14,
-  macdFast: 12,
-  macdSlow: 26,
-  macdSignal: 9,
-  bollingerPeriod: 20,
-  bollingerStdDev: 2,
-  baseConfidenceThreshold: 70,
-  minConfidenceThreshold: 50,
-  maxConfidenceThreshold: 85,
-  riskPerTrade: 0.01,
-  maxDailyLoss: 0.05,
-  atrMultiplierSL: 2,
-  rewardToRisk: 3,
-  qualityThreshold: 85,
+  baseConfidenceThreshold: 50,
+  minConfidenceThreshold: 30,
+  maxTradeAmount: 0.50,
   minTradeAmount: 0.10,
-  symbols: ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'],
-  logLevel: 'info',
+  riskPerTrade: 0.01,          // 1% of balance (will be adjusted)
+  stopLossPercent: 2,
+  takeProfitPercent: 5,
+  maxDailyLoss: 0.05,
+  kellyFraction: 0.25,         // use 25% of Kelly for safety
 };
 
-// ─── PERSISTENT STATE HELPERS ──────────────────────────────────────────────────
-
+// ─── PERSISTENT STATE ──────────────────────────────────────────────
 async function loadAgentState(email) {
   const { data, error } = await supabase
     .from('users')
@@ -52,369 +34,334 @@ async function loadAgentState(email) {
       activeTradeId: null,
       tradeOpenTime: null,
       paperBalance: 1000,
-      priceHistory: {},
+      priceHistory: [],
       lastSignal: null,
       lastTradeAttempt: null,
       consecutiveWins: 0,
       consecutiveLosses: 0,
       startingBalance: 1000,
       tradeHistory: [],
-      selectedSymbol: 'BTCUSDT',
-      wsConnected: false,
+      // Performance tracking
+      signalStats: { BUY: { wins: 0, losses: 0 }, SELL: { wins: 0, losses: 0 } },
     };
   }
   return data.agent_state;
 }
 
 async function saveAgentState(email, state) {
-  await supabase
-    .from('users')
-    .update({ agent_state: state })
-    .eq('email', email);
+  await supabase.from('users').update({ agent_state: state }).eq('email', email);
 }
 
-// ─── HELPER FUNCTIONS ──────────────────────────────────────────────────────────
-
-async function getCandles(symbol, interval, limit = 100) {
+async function getCandles(symbol, interval = '1m', limit = 50) {
   const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
   const data = await res.json();
-  return data.map(c => ({
-    open: parseFloat(c[1]),
-    high: parseFloat(c[2]),
-    low: parseFloat(c[3]),
-    close: parseFloat(c[4]),
-    volume: parseFloat(c[5]),
-    time: new Date(c[0]),
-  }));
+  return data.map(c => parseFloat(c[4]));
 }
 
-function computeIndicators(closes) {
-  if (closes.length < 30) return null;
-  const rsi = technical.RSI.calculate({ values: closes, period: CONFIG.rsiPeriod });
-  const ema50 = technical.EMA.calculate({ values: closes, period: 50 });
-  const ema100 = technical.EMA.calculate({ values: closes, period: 100 });
-  const ema200 = technical.EMA.calculate({ values: closes, period: 200 });
-  const macd = technical.MACD.calculate({
-    values: closes,
-    fastPeriod: CONFIG.macdFast,
-    slowPeriod: CONFIG.macdSlow,
-    signalPeriod: CONFIG.macdSignal,
-  });
-  const bb = technical.BollingerBands.calculate({
-    values: closes,
-    period: CONFIG.bollingerPeriod,
-    stdDev: CONFIG.bollingerStdDev,
-  });
-  return {
-    rsi: rsi[rsi.length-1],
-    ema50: ema50[ema50.length-1],
-    ema100: ema100[ema100.length-1],
-    ema200: ema200[ema200.length-1],
-    macd: macd[macd.length-1],
-    bb: bb[bb.length-1],
-    atr: 0.02 * closes[closes.length-1], // placeholder
-  };
+// ─── RISK OF RUIN ───────────────────────────────────────────────────
+function riskOfRuin(winRate, riskPerTrade) {
+  if (winRate <= 0 || winRate >= 1) return 0;
+  const lossRate = 1 - winRate;
+  const r = lossRate / winRate;
+  if (r >= 1) return 1; // edge case
+  return Math.pow(r, 0.5 / riskPerTrade);
 }
 
-function detectRegime(closes) {
-  if (closes.length < 20) return 'unknown';
-  const recent = closes.slice(-20);
-  const diffs = [];
-  for (let i = 1; i < recent.length; i++) {
-    diffs.push(recent[i] - recent[i-1]);
-  }
-  const avgMove = diffs.reduce((a,b) => a + Math.abs(b), 0) / diffs.length;
-  const netMove = recent[recent.length-1] - recent[0];
-  const strength = Math.abs(netMove) / avgMove;
-  if (strength > 2.5) return 'trending';
-  if (strength > 1.5) return 'weak_trend';
-  return 'ranging';
+// ─── KELLY SIZING ──────────────────────────────────────────────────
+function kellyFraction(winRate, avgWin, avgLoss) {
+  if (avgLoss === 0) return 0;
+  const b = avgWin / avgLoss;
+  const p = winRate;
+  const q = 1 - p;
+  const k = (p * b - q) / b;
+  return Math.max(0, Math.min(k, 0.1)); // cap at 10%
 }
 
-function adaptiveThreshold(regime, base) {
-  if (regime === 'trending') return Math.max(CONFIG.minConfidenceThreshold, base - 20);
-  if (regime === 'weak_trend') return base;
-  return Math.min(CONFIG.maxConfidenceThreshold, base + 10);
-}
-
-// ─── WEBSOCKET CONNECTION ──────────────────────────────────────────────────────
-
-let ws = null;
-let wsReconnectTimer = null;
-
-function connectWebSocket(email, symbol) {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
-
-  const streamName = symbol.toLowerCase().replace('usdt', 'usdt@trade');
-  const wsUrl = `wss://stream.binance.com:9443/ws/${streamName}`;
-  ws = new WebSocket(wsUrl);
-
-  ws.on('open', () => {
-    console.log(`[WS] Connected to ${wsUrl}`);
-    const state = loadAgentState(email);
-    state.wsConnected = true;
-    saveAgentState(email, state);
-    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
-  });
-
-  ws.on('message', async (data) => {
-    try {
-      const msg = JSON.parse(data);
-      if (msg.p) {
-        const price = parseFloat(msg.p);
-        const state = await loadAgentState(email);
-        if (!state.running) return;
-        // Update price history and run analysis
-        const symbol = state.selectedSymbol || 'BTCUSDT';
-        state.priceHistory[symbol] = state.priceHistory[symbol] || [];
-        state.priceHistory[symbol].push(price);
-        if (state.priceHistory[symbol].length > 100) state.priceHistory[symbol].shift();
-        // Trigger analysis (non‑blocking)
-        // We'll call a function that runs the agent loop with the new price
-        // We'll use a separate function to avoid overlapping loops
-        handlePriceUpdate(email, symbol, price);
-      }
-    } catch (e) {
-      console.error('[WS] Error processing message:', e);
-    }
-  });
-
-  ws.on('close', () => {
-    console.log('[WS] Connection closed, reconnecting in 5s...');
-    const state = loadAgentState(email);
-    state.wsConnected = false;
-    saveAgentState(email, state);
-    wsReconnectTimer = setTimeout(() => connectWebSocket(email, symbol), 5000);
-  });
-
-  ws.on('error', (err) => {
-    console.error('[WS] Error:', err);
-  });
-}
-
-// ─── AGENT LOOP (triggered by WebSocket) ─────────────────────────────────────
-
+// ─── MAIN AGENT LOOP ──────────────────────────────────────────────
 let processingLock = false;
 
-async function handlePriceUpdate(email, symbol, price) {
+async function agentLoop(email) {
   if (processingLock) return;
   processingLock = true;
 
   try {
     const state = await loadAgentState(email);
-    if (!state.running) {
-      processingLock = false;
-      return;
-    }
+    if (!state.running) { processingLock = false; return; }
 
-    // Get current settings
-    const settings = (await supabase
+    const settingsRes = await supabase
       .from('users')
-      .select('bot_settings, paper_balance')
+      .select('bot_settings, paper_balance, binance_api_key, binance_secret_key')
       .eq('email', email)
-      .single()).data || {};
-    state.paperBalance = settings.paper_balance || state.paperBalance;
+      .single();
+    const settings = settingsRes.data || {};
+    const isPaper = settings.bot_settings?.paperMode !== false;
+    const symbol = settings.bot_settings?.market || 'BTCUSDT';
 
-    // Use the symbol from state (fallback)
-    const currentSymbol = state.selectedSymbol || 'BTCUSDT';
+    // Get price and update history
+    const priceRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+    const priceData = await priceRes.json();
+    const price = parseFloat(priceData.price);
+    if (!price) { processingLock = false; return; }
 
-    // Ensure we have price history
-    if (!state.priceHistory[currentSymbol]) state.priceHistory[currentSymbol] = [];
-    state.priceHistory[currentSymbol].push(price);
-    if (state.priceHistory[currentSymbol].length > 100) state.priceHistory[currentSymbol].shift();
-
-    const closes = state.priceHistory[currentSymbol];
-    if (closes.length < 30) {
-      processingLock = false;
-      return;
+    state.priceHistory.push(price);
+    if (state.priceHistory.length > 100) state.priceHistory.shift();
+    if (state.priceHistory.length < 20) {
+      const closes = await getCandles(symbol);
+      state.priceHistory = closes;
     }
 
-    // Check existing trade
+    // ─── Check open trade ──────────────────────────────────────────
     if (state.activeTradeId) {
-      // Monitor trade – we'll do this in a separate function to keep it clean
-      // For now, we'll skip monitoring here and let the loop handle it.
+      const trade = await supabase
+        .from('trades')
+        .select('*')
+        .eq('id', state.activeTradeId)
+        .single();
+      if (trade.data) {
+        const t = trade.data;
+        const entry = t.entry_price;
+        const sl = t.stop_loss;
+        const tp = t.take_profit;
+        const openedAt = new Date(t.opened_at);
+        const elapsed = (new Date() - openedAt) / 1000;
+        let closed = false;
+        if (t.type === 'BUY') {
+          if (price <= sl || price >= tp || elapsed > 120) closed = true;
+        } else {
+          if (price >= sl || price <= tp || elapsed > 120) closed = true;
+        }
+        if (closed) {
+          const pnl = (t.type === 'BUY') ? (price - entry) * t.quantity : (entry - price) * t.quantity;
+          await supabase.from('trades').update({
+            exit_price: price,
+            pnl: pnl,
+            status: 'closed',
+            closed_at: new Date().toISOString(),
+            close_reason: 'SL/TP/TIME',
+          }).eq('id', state.activeTradeId);
+
+          // Update performance stats
+          const sigType = t.type;
+          if (pnl > 0) {
+            state.signalStats[sigType].wins += 1;
+          } else {
+            state.signalStats[sigType].losses += 1;
+          }
+
+          if (isPaper) {
+            state.paperBalance += pnl;
+          }
+          state.activeTradeId = null;
+          state.tradeOpenTime = null;
+          if (pnl > 0) state.consecutiveWins++; else state.consecutiveLosses++;
+          state.totalPnL += pnl;
+          if (pnl < 0) state.dailyLoss += Math.abs(pnl);
+          await saveAgentState(email, state);
+          processingLock = false;
+          return;
+        }
+      } else {
+        state.activeTradeId = null;
+        await saveAgentState(email, state);
+        processingLock = false;
+        return;
+      }
       processingLock = false;
       return;
     }
 
-    // Compute indicators
-    const ind = computeIndicators(closes);
-    if (!ind) {
-      processingLock = false;
-      return;
-    }
+    // ─── Get signal ──────────────────────────────────────────────────
+    const closes = state.priceHistory;
+    if (closes.length < 20) { processingLock = false; return; }
 
-    const regime = detectRegime(closes);
-    const threshold = adaptiveThreshold(regime, CONFIG.baseConfidenceThreshold);
+    // Compute indicators for AI
+    const rsi = technical.RSI.calculate({ values: closes, period: 14 });
+    const macd = technical.MACD.calculate({
+      values: closes,
+      fastPeriod: 12,
+      slowPeriod: 26,
+      signalPeriod: 9,
+    });
+    const ind = {
+      rsi: rsi[rsi.length-1],
+      macd: macd[macd.length-1],
+      closes: closes,
+    };
 
-    // Multi‑timeframe agreement (simplified: use RSI and MACD)
-    let preliminarySignal = 'HOLD';
-    const rsi = ind.rsi;
-    const macd = ind.macd;
-    const priceAboveEMA = price > ind.ema50 && ind.ema50 > ind.ema100 && ind.ema100 > ind.ema200;
-    const priceBelowEMA = price < ind.ema50 && ind.ema50 < ind.ema100 && ind.ema100 < ind.ema200;
+    // AI analysis (passes closes for enhanced fallback)
+    const aiResult = await getAnalysis(
+      symbol,
+      price,
+      { rsi: ind.rsi, macd: ind.macd ? ind.macd.MACD : 0, closes: closes },
+      email
+    );
+    state.lastSignal = aiResult;
 
-    if (priceAboveEMA && rsi < 50) preliminarySignal = 'BUY';
-    else if (priceBelowEMA && rsi > 50) preliminarySignal = 'SELL';
+    // ─── Adaptive confidence based on volatility ──────────────────
+    // Compute volatility (ATR approximation)
+    const atr = (Math.max(...closes.slice(-20)) - Math.min(...closes.slice(-20))) / 20;
+    const volPct = atr / price;
+    let threshold = CONFIG.baseConfidenceThreshold;
+    if (volPct > 0.03) threshold = Math.max(CONFIG.minConfidenceThreshold, threshold - 10); // lower in high vol
+    else if (volPct < 0.01) threshold = Math.min(70, threshold + 10); // higher in low vol
 
-    // AI confirmation
-    let aiSignal = { signal: 'HOLD', confidence: 0, reason: '' };
-    if (preliminarySignal !== 'HOLD') {
-      const aiResult = await getAnalysis(
-        currentSymbol,
-        price,
-        {
-          rsi: ind.rsi,
-          ema: ind.ema50,
-          macd: ind.macd ? ind.macd.MACD : 0,
-          trend: priceAboveEMA ? 'bullish' : 'bearish',
-          regime,
-        },
-        email
-      );
-      aiSignal = aiResult;
-    }
-
-    const finalDecision = (preliminarySignal !== 'HOLD' && aiSignal.signal === preliminarySignal && aiSignal.confidence >= threshold)
-      ? preliminarySignal
+    const finalSignal = (aiResult.signal !== 'HOLD' && aiResult.confidence >= threshold)
+      ? aiResult.signal
       : 'HOLD';
 
-    // Trade quality score
-    let tradeScore = 0;
-    if (finalDecision !== 'HOLD') {
-      if (priceAboveEMA && finalDecision === 'BUY') tradeScore += 20;
-      else if (priceBelowEMA && finalDecision === 'SELL') tradeScore += 20;
-      if (ind.rsi < 30 && finalDecision === 'BUY') tradeScore += 15;
-      else if (ind.rsi > 70 && finalDecision === 'SELL') tradeScore += 15;
-      if (ind.macd && ind.macd.MACD > ind.macd.signal && finalDecision === 'BUY') tradeScore += 10;
-      else if (ind.macd && ind.macd.MACD < ind.macd.signal && finalDecision === 'SELL') tradeScore += 10;
-      if (ind.bb && finalDecision === 'BUY' && price < ind.bb.lower) tradeScore += 10;
-      else if (ind.bb && finalDecision === 'SELL' && price > ind.bb.upper) tradeScore += 10;
-      tradeScore = Math.min(tradeScore, 100);
-    }
-
-    if (finalDecision === 'HOLD' || tradeScore < CONFIG.qualityThreshold) {
-      state.lastTradeAttempt = `HOLD or score ${tradeScore} < ${CONFIG.qualityThreshold}`;
+    if (finalSignal === 'HOLD') {
+      state.lastTradeAttempt = `HOLD (${aiResult.confidence}%)`;
       await saveAgentState(email, state);
       processingLock = false;
       return;
     }
 
-    // Check daily loss
-    if (state.dailyLoss >= CONFIG.maxDailyLoss * 1000) {
-      state.running = false;
-      await saveAgentState(email, state);
-      processingLock = false;
-      return;
-    }
-
-    // Position sizing
-    const balance = state.paperBalance;
-    const riskAmount = Math.max(CONFIG.minTradeAmount, balance * CONFIG.riskPerTrade);
-    const atr = ind.atr || 0.02 * price;
-    const slDistance = atr * CONFIG.atrMultiplierSL;
-    let stopLoss, takeProfit;
-    if (finalDecision === 'BUY') {
-      stopLoss = price - slDistance;
-      takeProfit = price + slDistance * CONFIG.rewardToRisk;
+    // ─── Determine balance ──────────────────────────────────────────
+    let balance;
+    if (isPaper) {
+      balance = state.paperBalance;
     } else {
-      stopLoss = price + slDistance;
-      takeProfit = price - slDistance * CONFIG.rewardToRisk;
+      if (!settings.binance_api_key) {
+        state.lastTradeAttempt = 'Binance not connected';
+        await saveAgentState(email, state);
+        processingLock = false;
+        return;
+      }
+      const client = Binance({ apiKey: settings.binance_api_key, secretKey: settings.binance_secret_key });
+      const account = await client.accountInfo();
+      const usdt = account.balances.find(b => b.asset === 'USDT');
+      balance = usdt ? parseFloat(usdt.free) : 0;
     }
-    const quantity = riskAmount / price;
 
-    // Execute trade
-    const tradeId = uuidv4();
-    await supabase
+    if (balance < 1) {
+      state.lastTradeAttempt = 'Balance < $1';
+      await saveAgentState(email, state);
+      processingLock = false;
+      return;
+    }
+
+    // ─── Kelly sizing ──────────────────────────────────────────────
+    const stats = state.signalStats[finalSignal];
+    const total = stats.wins + stats.losses;
+    let winRate = total > 0 ? stats.wins / total : 0.5;
+    // Use overall win rate if specific signal has too few trades
+    const totalTrades = Object.values(state.signalStats).reduce((s, t) => s + t.wins + t.losses, 0);
+    if (total < 5) {
+      winRate = totalTrades > 0 ? (Object.values(state.signalStats).reduce((s, t) => s + t.wins, 0) / totalTrades) : 0.5;
+    }
+    // Average win/loss (global)
+    const trades = await supabase
       .from('trades')
-      .insert([{
-        id: tradeId,
-        user_email: email,
-        symbol: currentSymbol,
-        type: finalDecision,
-        entry_price: price,
-        quantity: quantity,
-        stop_loss: stopLoss,
-        take_profit: takeProfit,
-        duration: 120,
-        signal_confidence: aiSignal.confidence,
-        signal_reason: aiSignal.reason || `Score ${tradeScore}`,
-        status: 'open',
-        opened_at: new Date().toISOString(),
-        is_paper: true,
-        trade_score: tradeScore,
-        market_regime: regime,
-        volatility: atr / price,
-        indicators: ind,
-      }]);
+      .select('pnl')
+      .eq('user_email', email)
+      .eq('status', 'closed');
+    const pnls = trades.data?.map(t => t.pnl) || [];
+    const avgWin = pnls.filter(p => p > 0).reduce((a, b) => a + b, 0) / (pnls.filter(p => p > 0).length || 1);
+    const avgLoss = Math.abs(pnls.filter(p => p < 0).reduce((a, b) => a + b, 0)) / (pnls.filter(p => p < 0).length || 1);
+
+    let kelly = kellyFraction(winRate, avgWin || 1, avgLoss || 1);
+    kelly *= CONFIG.kellyFraction; // 25% of Kelly
+    kelly = Math.max(0.005, Math.min(kelly, 0.03)); // clamp between 0.5% and 3%
+
+    // Risk-of-ruin check
+    const ror = riskOfRuin(winRate, kelly);
+    if (ror > 0.1) {
+      kelly *= 0.5; // reduce risk if ruin probability too high
+    }
+
+    const tradeAmount = Math.max(CONFIG.minTradeAmount, Math.min(balance * kelly, CONFIG.maxTradeAmount));
+    const quantity = tradeAmount / price;
+
+    // ─── Stop Loss / Take Profit ──────────────────────────────────
+    const slPercent = CONFIG.stopLossPercent;
+    const tpPercent = CONFIG.takeProfitPercent;
+    let stopLoss, takeProfit;
+    if (finalSignal === 'BUY') {
+      stopLoss = price * (1 - slPercent / 100);
+      takeProfit = price * (1 + tpPercent / 100);
+    } else {
+      stopLoss = price * (1 + slPercent / 100);
+      takeProfit = price * (1 - tpPercent / 100);
+    }
+
+    // ─── Execute trade ──────────────────────────────────────────────
+    const tradeId = uuidv4();
+    await supabase.from('trades').insert([{
+      id: tradeId,
+      user_email: email,
+      symbol: symbol,
+      type: finalSignal,
+      entry_price: price,
+      quantity: quantity,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
+      duration: 120,
+      signal_confidence: aiResult.confidence,
+      signal_reason: aiResult.reason || 'AI signal',
+      status: 'open',
+      opened_at: new Date().toISOString(),
+      is_paper: isPaper,
+    }]);
 
     state.activeTradeId = tradeId;
     state.tradeOpenTime = new Date();
     state.tradesToday++;
-    state.lastTradeAttempt = `✅ ${finalDecision} at ${price} (score ${tradeScore})`;
+    state.lastTradeAttempt = `✅ ${finalSignal} at ${price} ($${tradeAmount.toFixed(2)})`;
     await saveAgentState(email, state);
 
-    console.log(`📄 PAPER TRADE: ${finalDecision} ${currentSymbol} at ${price} (amount: $${riskAmount.toFixed(2)}, score: ${tradeScore})`);
+    console.log(`📄 ${isPaper ? 'PAPER' : 'REAL'} TRADE: ${finalSignal} ${symbol} at ${price} ($${tradeAmount.toFixed(2)})`);
 
   } catch (error) {
     console.error('[Agent] Loop error:', error);
   } finally {
     processingLock = false;
+    const state = await loadAgentState(email);
+    if (state.running) {
+      setTimeout(() => agentLoop(email), 5000);
+    }
   }
 }
 
-// ─── START / STOP / STATUS ────────────────────────────────────────────────────
+// ─── ENDPOINTS ──────────────────────────────────────────────────────
 
 router.post('/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  const state = await loadAgentState(email);
-  if (state.running) return res.json({ status: 'already running' });
+  try {
+    const state = await loadAgentState(email);
+    if (state.running) return res.json({ status: 'already running' });
 
-  // Reset daily counters
-  state.tradesToday = 0;
-  state.dailyLoss = 0;
-  state.totalPnL = 0;
-  state.consecutiveWins = 0;
-  state.consecutiveLosses = 0;
-  state.running = true;
-  state.lastTradeAttempt = null;
+    state.running = true;
+    state.tradesToday = 0;
+    state.dailyLoss = 0;
+    state.totalPnL = 0;
+    state.priceHistory = [];
+    state.lastTradeAttempt = null;
 
-  // Seed price history for default symbol
-  const settings = (await supabase
-    .from('users')
-    .select('bot_settings')
-    .eq('email', email)
-    .single()).data || {};
-  const symbol = settings.bot_settings?.market || 'BTCUSDT';
-  state.selectedSymbol = symbol;
-  state.priceHistory[symbol] = [];
-  const candles = await getCandles(symbol, '1m', 50);
-  state.priceHistory[symbol] = candles.map(c => c.close);
+    const settings = (await supabase.from('users').select('bot_settings').eq('email', email).single()).data || {};
+    const symbol = settings.bot_settings?.market || 'BTCUSDT';
+    const closes = await getCandles(symbol);
+    state.priceHistory = closes;
 
-  await saveAgentState(email, state);
+    await saveAgentState(email, state);
+    processingLock = false;
+    setTimeout(() => agentLoop(email), 1000);
 
-  // Connect WebSocket
-  connectWebSocket(email, symbol);
-
-  res.json({ status: 'started' });
+    res.json({ status: 'started' });
+  } catch (err) {
+    console.error('[Agent] Start error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 router.post('/stop', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
-
   const state = await loadAgentState(email);
   state.running = false;
   await saveAgentState(email, state);
-
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.close();
-    ws = null;
-  }
-
   res.json({ status: 'stopped' });
 });
 
@@ -423,31 +370,6 @@ router.get('/status', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email required' });
   const state = await loadAgentState(email);
   res.json(state);
-});
-
-// ─── UPDATE SYMBOL (multi‑asset support) ────────────────────────────────────
-
-router.post('/symbol', async (req, res) => {
-  const { email, symbol } = req.body;
-  if (!email || !symbol) return res.status(400).json({ error: 'Email and symbol required' });
-
-  const state = await loadAgentState(email);
-  state.selectedSymbol = symbol;
-  // Initialize price history for new symbol if needed
-  if (!state.priceHistory[symbol]) {
-    const candles = await getCandles(symbol, '1m', 50);
-    state.priceHistory[symbol] = candles.map(c => c.close);
-  }
-  await saveAgentState(email, state);
-
-  // Reconnect WebSocket to new symbol
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.close();
-    ws = null;
-  }
-  connectWebSocket(email, symbol);
-
-  res.json({ status: 'symbol updated', symbol });
 });
 
 module.exports = router;
