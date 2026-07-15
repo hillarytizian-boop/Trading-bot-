@@ -3,37 +3,116 @@ import Chart from "./Chart";
 import Dashboard from "./Dashboard";
 import Backtest from "./Backtest";
 
-const TG_BLUE = "#2AABEE", DARK_BG = "#0E1621", DARK_PANEL = "#17212B";
-const DARK_BORDER = "rgba(255,255,255,0.07)", TEXT = "#E7ECF0", MUTED = "#6C7883";
-const GREEN = "#4FCE5D", RED = "#FF5E5E", GOLD = "#F0B429", sysFont = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+// ─── Design System ──────────────────────────────────────────────
+const TG_BLUE = "#2AABEE";
+const DARK_BG = "#0E1621";
+const GLASS_BG = "rgba(255,255,255,0.04)";
+const GLASS_BORDER = "rgba(255,255,255,0.08)";
+const TEXT = "#E7ECF0";
+const MUTED = "#6C7883";
+const GREEN = "#4FCE5D";
+const RED = "#FF5E5E";
+const GOLD = "#F0B429";
+const font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const CURRENT_USER = { name: "Demo Trader", email: "demo@example.com", role: "user" };
 
-function pill(c) { return { background: `${c}1f`, color: c, border: `1px solid ${c}55`, borderRadius: 20, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }; }
+const glass = {
+  background: GLASS_BG,
+  backdropFilter: "blur(20px)",
+  WebkitBackdropFilter: "blur(20px)",
+  border: `1px solid ${GLASS_BORDER}`,
+  borderRadius: "16px",
+  boxShadow: "0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)",
+};
+
+// ─── Helpers ──────────────────────────────────────────────────
+function pill(c) {
+  return {
+    background: `${c}22`,
+    color: c,
+    border: `1px solid ${c}55`,
+    borderRadius: "30px",
+    padding: "8px 18px",
+    fontSize: "13px",
+    fontWeight: 700,
+    cursor: "pointer",
+    backdropFilter: "blur(10px)",
+    transition: "all 0.2s",
+    ':hover': { transform: 'scale(1.03)' },
+  };
+}
 function Dot({ d }) { return <span style={{ width: 6, height: 6, borderRadius: "50%", background: MUTED, display: "inline-block", animation: "tgBounce 1.2s infinite", animationDelay: `${d}s` }} />; }
 function SignalChip({ signal, confidence, risk }) {
   const c = signal === "BUY" ? GREEN : signal === "SELL" ? RED : MUTED;
-  return ( <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}> <span style={{ background: `${c}22`, color: c, border: `1px solid ${c}55`, borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 700 }}>{signal}</span> <span style={{ background: "rgba(240,180,41,0.15)", color: GOLD, border: "1px solid rgba(240,180,41,0.35)", borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 700 }}>{confidence}%</span> <span style={{ background: "rgba(255,255,255,0.06)", color: MUTED, border: `1px solid ${DARK_BORDER}`, borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>Risk: {risk}</span> </div> ); }
-function BotBubble({ children, time }) { return ( <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "flex-end" }}> <div style={{ width: 28, height: 28, borderRadius: "50%", background: `linear-gradient(135deg,${TG_BLUE},#229ED9)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, flexShrink: 0, color: "#fff", fontWeight: 700 }}>H</div> <div style={{ maxWidth: "82%" }}> <div style={{ background: "#182533", borderRadius: "4px 16px 16px 16px", padding: "10px 14px", fontSize: 14, lineHeight: 1.5 }}>{children}</div> <p style={{ fontSize: 11, color: MUTED, marginTop: 4, marginLeft: 4 }}>{time}</p> </div> </div> ); }
-function UserBubble({ children, time }) { return ( <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}> <div style={{ maxWidth: "78%" }}> <div style={{ background: `linear-gradient(135deg,#2B5278,#1f3a52)`, borderRadius: "16px 4px 16px 16px", padding: "10px 14px", fontSize: 14, lineHeight: 1.5, color: "#fff" }}>{children}</div> <p style={{ fontSize: 11, color: MUTED, marginTop: 4, marginRight: 4, textAlign: "right" }}>{time} <span style={{ color: TG_BLUE }}>✓✓</span></p> </div> </div> ); }
-function TgSwitch({ checked, onChange }) { return ( <div onClick={() => onChange(!checked)} style={{ width: 46, height: 26, borderRadius: 13, background: checked ? TG_BLUE : "rgba(255,255,255,0.14)", position: "relative", cursor: "pointer", transition: "background 0.25s", flexShrink: 0 }}> <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: checked ? 22 : 2, transition: "left 0.25s", boxShadow: "0 1px 3px rgba(0,0,0,0.4)" }} /> </div> ); }
-function TgListRow({ icon, label, sub, right, onClick, last }) { return ( <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 13, padding: "12px 16px", cursor: onClick ? "pointer" : "default", borderBottom: last ? "none" : `1px solid ${DARK_BORDER}` }}> <div style={{ width: 32, height: 32, borderRadius: 9, background: "rgba(42,171,238,0.12)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{icon}</div> <div style={{ flex: 1, minWidth: 0 }}> <p style={{ fontSize: 14, lineHeight: 1.2 }}>{label}</p> {sub && <p style={{ fontSize: 11.5, color: MUTED, marginTop: 1 }}>{sub}</p>} </div> {right} </div> ); }
+  return (
+    <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+      <span style={{ background: `${c}22`, color: c, border: `1px solid ${c}55`, borderRadius: 20, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>{signal}</span>
+      <span style={{ background: "rgba(240,180,41,0.15)", color: GOLD, border: "1px solid rgba(240,180,41,0.35)", borderRadius: 20, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>{confidence}%</span>
+      <span style={{ background: "rgba(255,255,255,0.05)", color: MUTED, border: `1px solid ${GLASS_BORDER}`, borderRadius: 20, padding: "3px 12px", fontSize: 12 }}>Risk: {risk}</span>
+    </div>
+  );
+}
+function BotBubble({ children, time }) {
+  return (
+    <div style={{ display: "flex", gap: 10, marginBottom: 14, alignItems: "flex-end" }}>
+      <div style={{ width: 32, height: 32, borderRadius: "50%", background: `linear-gradient(135deg,${TG_BLUE},#229ED9)`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: "#fff", fontWeight: 700, fontSize: 14, boxShadow: "0 4px 12px rgba(42,171,238,0.3)" }}>H</div>
+      <div style={{ maxWidth: "82%" }}>
+        <div style={{ ...glass, padding: "12px 16px", borderRadius: "12px 16px 16px 16px", background: "rgba(255,255,255,0.05)" }}>{children}</div>
+        <p style={{ fontSize: 11, color: MUTED, marginTop: 4, marginLeft: 4 }}>{time}</p>
+      </div>
+    </div>
+  );
+}
+function UserBubble({ children, time }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+      <div style={{ maxWidth: "78%" }}>
+        <div style={{ ...glass, padding: "12px 16px", borderRadius: "16px 12px 16px 16px", background: `linear-gradient(135deg,${TG_BLUE}33,#1a3a5a)` }}>{children}</div>
+        <p style={{ fontSize: 11, color: MUTED, marginTop: 4, marginRight: 4, textAlign: "right" }}>{time} <span style={{ color: TG_BLUE }}>✓✓</span></p>
+      </div>
+    </div>
+  );
+}
+function TgSwitch({ checked, onChange }) {
+  return (
+    <div onClick={() => onChange(!checked)} style={{ width: 46, height: 26, borderRadius: 13, background: checked ? TG_BLUE : "rgba(255,255,255,0.15)", position: "relative", cursor: "pointer", transition: "background 0.25s", flexShrink: 0, boxShadow: checked ? "0 0 20px rgba(42,171,238,0.3)" : "none" }}>
+      <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: checked ? 22 : 2, transition: "left 0.25s", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }} />
+    </div>
+  );
+}
+function TgListRow({ icon, label, sub, right, onClick, last }) {
+  return (
+    <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", cursor: onClick ? "pointer" : "default", borderBottom: last ? "none" : `1px solid ${GLASS_BORDER}`, transition: "background 0.2s", ':hover': onClick ? { background: "rgba(255,255,255,0.03)" } : {} }}>
+      <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(42,171,238,0.12)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{icon}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={{ fontSize: 14, lineHeight: 1.2 }}>{label}</p>
+        {sub && <p style={{ fontSize: 12, color: MUTED, marginTop: 1 }}>{sub}</p>}
+      </div>
+      {right}
+    </div>
+  );
+}
 function Chevron() { return <span style={{ color: MUTED, fontSize: 16 }}>›</span>; }
 
+// ─── AppHeader ────────────────────────────────────────────────
 function AppHeader({ onOpenSettings, binanceConnected }) {
   return (
-    <div style={{ height: 56, background: DARK_PANEL, borderBottom: `1px solid ${DARK_BORDER}`, display: "flex", alignItems: "center", padding: "0 14px", flexShrink: 0, position: "relative" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, width: 90 }}>
-        <div style={{ width: 30, height: 30, borderRadius: "50%", background: `linear-gradient(135deg,${TG_BLUE},#229ED9)`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "#fff", fontSize: 14 }}>H</div>
-        {binanceConnected && <span style={{ width: 7, height: 7, borderRadius: "50%", background: GREEN }} />}
+    <div style={{ ...glass, height: 60, display: "flex", alignItems: "center", padding: "0 20px", flexShrink: 0, position: "relative", borderRadius: 0, borderBottom: `1px solid ${GLASS_BORDER}`, background: "rgba(14,22,33,0.7)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, width: 100 }}>
+        <div style={{ width: 36, height: 36, borderRadius: "50%", background: `linear-gradient(135deg,${TG_BLUE},#229ED9)`, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "#fff", fontSize: 16, boxShadow: "0 4px 16px rgba(42,171,238,0.3)" }}>H</div>
+        {binanceConnected && <span style={{ width: 8, height: 8, borderRadius: "50%", background: GREEN, boxShadow: "0 0 12px rgba(79,206,93,0.5)" }} />}
       </div>
-      <div style={{ position: "absolute", left: 0, right: 0, textAlign: "center", pointerEvents: "none" }}><span style={{ fontWeight: 700, fontSize: 16 }}>Hila Bot</span></div>
+      <div style={{ position: "absolute", left: 0, right: 0, textAlign: "center", pointerEvents: "none" }}>
+        <span style={{ fontWeight: 700, fontSize: 17, letterSpacing: "0.5px" }}>Hila Bot</span>
+      </div>
       <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
-        <button onClick={onOpenSettings} aria-label="Settings" style={{ width: 36, height: 36, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.06)", color: TEXT, fontSize: 17, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>⚙️</button>
+        <button onClick={onOpenSettings} aria-label="Settings" style={{ ...glass, width: 40, height: 40, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.06)", color: TEXT, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "transform 0.2s", ':hover': { transform: 'scale(1.1)' } }}>⚙️</button>
       </div>
     </div>
   );
 }
 
+// ─── SettingsDrawer ──────────────────────────────────────────
 function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
@@ -50,10 +129,10 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const displayBalance = binance?.balance || '0.00';
 
   const saveBinanceKeys = async () => {
-    if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
+    if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in all fields.'); return; }
     setStatus('connecting');
     try {
-      const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
+      const res = await fetch('/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey }) });
       const data = await res.json();
       if (res.ok) {
         setStatus('connected');
@@ -61,22 +140,22 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
         const balRes = await fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`);
         const balData = await balRes.json();
         if (balRes.ok) setBalance(balData.balance || '0.00');
-      } else { setStatus('error'); alert('Failed to connect: ' + data.error); }
-    } catch (err) { setStatus('error'); alert('Network error: ' + err.message); }
+        alert('✅ Connected successfully!');
+      } else {
+        setStatus('error');
+        alert('❌ ' + (data.error || 'Connection failed'));
+      }
+    } catch (err) {
+      setStatus('error');
+      alert('❌ Network error: ' + err.message);
+    }
   };
 
   useEffect(() => {
     if (open && localEmail) {
       fetch(`/api/binance/status?email=${encodeURIComponent(localEmail)}`)
         .then(r => r.json())
-        .then(data => {
-          if (data.connected) {
-            setStatus('connected');
-            fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`)
-              .then(r => r.json())
-              .then(bal => { if (bal.balance !== undefined) setBalance(bal.balance); });
-          }
-        })
+        .then(data => { if (data.connected) { setStatus('connected'); fetch(`/api/binance/balance?email=${encodeURIComponent(localEmail)}`).then(r=>r.json()).then(bal => { if (bal.balance !== undefined) setBalance(bal.balance); }); } })
         .catch(() => {});
     }
   }, [open, localEmail]);
@@ -85,68 +164,68 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     onSymbolChange(symbol);
     try {
       await fetch("/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail || email, settings: { market: symbol.replace("/", "") } }) });
-    } catch (err) { console.error("Failed to save symbol", err); }
+    } catch (err) { console.error(err); }
   };
 
   return (
     <>
-      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none", transition: "opacity 0.25s", zIndex: 200 }} />
-      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, maxHeight: "88vh", background: DARK_BG, borderRadius: "20px 20px 0 0", transform: open ? "translateY(0)" : "translateY(100%)", transition: "transform 0.3s cubic-bezier(.2,.8,.2,1)", zIndex: 201, display: "flex", flexDirection: "column", boxShadow: "0 -10px 40px rgba(0,0,0,0.5)" }}>
-        <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 4px" }}><div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.18)" }} /></div>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 16px 12px", borderBottom: `1px solid ${DARK_BORDER}` }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>Settings</span>
-          <button onClick={onClose} style={{ background: "rgba(255,255,255,0.06)", border: "none", color: TEXT, width: 30, height: 30, borderRadius: "50%", fontSize: 15, cursor: "pointer" }}>✕</button>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(8px)", opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none", transition: "opacity 0.3s", zIndex: 200 }} />
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, maxHeight: "85vh", background: DARK_BG, borderRadius: "24px 24px 0 0", transform: open ? "translateY(0)" : "translateY(100%)", transition: "transform 0.4s cubic-bezier(.2,.9,.3,1)", zIndex: 201, display: "flex", flexDirection: "column", boxShadow: "0 -20px 60px rgba(0,0,0,0.6)", borderTop: `1px solid ${GLASS_BORDER}` }}>
+        <div style={{ display: "flex", justifyContent: "center", padding: "12px 0 4px" }}>
+          <div style={{ width: 40, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.2)" }} />
         </div>
-        <div style={{ overflowY: "auto", flex: 1, paddingBottom: 24 }}>
-          <p style={{ padding: "14px 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>BINANCE ACCOUNT</p>
-          <div style={{ background: DARK_PANEL, margin: "0 14px 18px", borderRadius: 14, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 20px 16px", borderBottom: `1px solid ${GLASS_BORDER}` }}>
+          <span style={{ fontWeight: 700, fontSize: 18 }}>Settings</span>
+          <button onClick={onClose} style={{ ...glass, width: 32, height: 32, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.06)", color: TEXT, fontSize: 14, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ overflowY: "auto", flex: 1, padding: "16px 20px 30px" }}>
+          <p style={{ padding: "0 0 8px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.06em" }}>BINANCE ACCOUNT</p>
+          <div style={{ ...glass, marginBottom: 18, overflow: "hidden" }}>
             {isConnected ? (
               <>
-                <TgListRow icon="✅" label="Connected" sub="Binance API" right={<span style={{ fontSize: 11, color: GREEN, fontWeight: 700 }}>● LIVE</span>} />
-                <TgListRow icon="💰" label="Balance" sub="USDT" right={<span style={{ fontFamily: "monospace" }}>{displayBalance}</span>} />
-                <TgListRow icon="🔑" label="API Key" sub="••••••••" right={<span style={{ fontSize: 11, color: MUTED }}>active</span>} last />
+                <TgListRow icon="✅" label="Connected" sub={localEmail} right={<span style={{ fontSize: 12, color: GREEN, fontWeight: 700 }}>● LIVE</span>} />
+                <TgListRow icon="💰" label="Balance" sub="USDT" right={<span style={{ fontFamily: "monospace", fontWeight: 700 }}>${displayBalance}</span>} />
+                <TgListRow icon="🔑" label="API Key" sub="••••••••" right={<span style={{ fontSize: 12, color: MUTED }}>active</span>} last />
               </>
             ) : (
-              <div style={{ padding: 16, textAlign: "center" }}>
-                <p style={{ fontSize: 13, color: MUTED, marginBottom: 12 }}>Enter your Binance API credentials.</p>
-                <input type="email" placeholder="Email" value={localEmail} onChange={e => setLocalEmail(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }} />
-                <input type="text" placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }} />
-                <input type="password" placeholder="Secret Key" value={apiSecret} onChange={e => setApiSecret(e.target.value)} style={{ width: "100%", marginBottom: 12, padding: 10, borderRadius: 8, background: "#0E1621", border: `1px solid ${DARK_BORDER}`, color: TEXT }} />
-                <button onClick={saveBinanceKeys} disabled={status === 'connecting'} style={{ ...pill(TG_BLUE), width: "100%", padding: "11px 0", opacity: status === 'connecting' ? 0.6 : 1 }}>{status === 'connecting' ? 'Connecting...' : '🔗 Connect to Binance'}</button>
+              <div style={{ padding: 16 }}>
+                <p style={{ fontSize: 13, color: MUTED, marginBottom: 12, textAlign: "center" }}>Enter your Binance API credentials.</p>
+                <input type="email" placeholder="Email" value={localEmail} onChange={e => setLocalEmail(e.target.value)} style={{ width: "100%", marginBottom: 10, padding: 12, borderRadius: 10, background: "rgba(0,0,0,0.3)", border: `1px solid ${GLASS_BORDER}`, color: TEXT, outline: "none", ':focus': { borderColor: TG_BLUE } }} />
+                <input type="text" placeholder="API Key" value={apiKey} onChange={e => setApiKey(e.target.value)} style={{ width: "100%", marginBottom: 10, padding: 12, borderRadius: 10, background: "rgba(0,0,0,0.3)", border: `1px solid ${GLASS_BORDER}`, color: TEXT, outline: "none" }} />
+                <input type="password" placeholder="Secret Key" value={apiSecret} onChange={e => setApiSecret(e.target.value)} style={{ width: "100%", marginBottom: 12, padding: 12, borderRadius: 10, background: "rgba(0,0,0,0.3)", border: `1px solid ${GLASS_BORDER}`, color: TEXT, outline: "none" }} />
+                <button onClick={saveBinanceKeys} disabled={status === 'connecting'} style={{ ...pill(TG_BLUE), width: "100%", padding: "12px 0", opacity: status === 'connecting' ? 0.6 : 1 }}>{status === 'connecting' ? 'Connecting...' : '🔗 Connect'}</button>
               </div>
             )}
           </div>
-          <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>RISK LEVEL</p>
-          <div style={{ display: "flex", gap: 8, padding: "0 14px", marginBottom: 18 }}>
-            {["LOW", "MEDIUM", "HIGH"].map((r) => (
-              <div key={r} onClick={() => setRiskLevel(r)} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 14, fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: riskLevel === r ? `${TG_BLUE}22` : DARK_PANEL, border: riskLevel === r ? `1px solid ${TG_BLUE}` : `1px solid ${DARK_BORDER}`, color: riskLevel === r ? TG_BLUE : MUTED }}>{r === "LOW" ? "🟢" : r === "MEDIUM" ? "🟡" : "🔴"} {r}</div>
+          <p style={{ padding: "0 0 8px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.06em" }}>RISK LEVEL</p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+            {["LOW","MEDIUM","HIGH"].map(r => (
+              <div key={r} onClick={() => setRiskLevel(r)} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 12, fontSize: 13, fontWeight: 700, cursor: "pointer", background: riskLevel === r ? `${TG_BLUE}22` : GLASS_BG, border: riskLevel === r ? `1px solid ${TG_BLUE}` : `1px solid ${GLASS_BORDER}`, color: riskLevel === r ? TG_BLUE : MUTED }}>{r}</div>
             ))}
           </div>
-          <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>TRADE LIMITS</p>
-          <div style={{ background: DARK_PANEL, margin: "0 14px 18px", borderRadius: 14, padding: "4px 0" }}>
+          <p style={{ padding: "0 0 8px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.06em" }}>TRADE LIMITS</p>
+          <div style={{ ...glass, marginBottom: 18, padding: "4px 0" }}>
             <div style={{ padding: "12px 16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 13.5 }}>Max daily loss</span><span style={{ fontFamily: "monospace", fontWeight: 700, color: RED }}>${maxDailyLoss}</span></div>
-              <input type="range" min={20} max={500} step={10} value={maxDailyLoss} onChange={(e) => setMaxDailyLoss(+e.target.value)} style={{ width: "100%", accentColor: RED }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 14 }}>Max daily loss</span><span style={{ fontFamily: "monospace", fontWeight: 700, color: RED }}>${maxDailyLoss}</span></div>
+              <input type="range" min={20} max={500} step={10} value={maxDailyLoss} onChange={e => setMaxDailyLoss(+e.target.value)} style={{ width: "100%", accentColor: RED }} />
             </div>
-            <div style={{ height: 1, background: DARK_BORDER }} />
+            <div style={{ height: 1, background: GLASS_BORDER }} />
             <div style={{ padding: "12px 16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 13.5 }}>Max trades per day</span><span style={{ fontFamily: "monospace", fontWeight: 700, color: TG_BLUE }}>{maxTrades}</span></div>
-              <input type="range" min={5} max={200} step={5} value={maxTrades} onChange={(e) => setMaxTrades(+e.target.value)} style={{ width: "100%", accentColor: TG_BLUE }} />
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 14 }}>Max trades per day</span><span style={{ fontFamily: "monospace", fontWeight: 700, color: TG_BLUE }}>{maxTrades}</span></div>
+              <input type="range" min={5} max={200} step={5} value={maxTrades} onChange={e => setMaxTrades(+e.target.value)} style={{ width: "100%", accentColor: TG_BLUE }} />
             </div>
           </div>
-          <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>AUTOMATION</p>
-          <div style={{ background: DARK_PANEL, margin: "0 14px 18px", borderRadius: 14, overflow: "hidden" }}>
+          <p style={{ padding: "0 0 8px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.06em" }}>AUTOMATION</p>
+          <div style={{ ...glass, marginBottom: 18, overflow: "hidden" }}>
             <TgListRow icon="🔄" label="Auto-compounding" sub="Reinvest profits" right={<TgSwitch checked={autoCompound} onChange={setAutoCompound} />} />
             <TgListRow icon="🔔" label="Trade notifications" sub="Alert on trade" right={<TgSwitch checked={notifications} onChange={setNotifications} />} />
             <TgListRow icon="📄" label="Paper Trading" sub="Simulate trades with virtual money" right={<TgSwitch checked={paperMode} onChange={() => onPaperToggle(!paperMode)} />} />
             <TgListRow icon="🛑" label="Auto stop loss" sub="Halt at daily loss" right={<TgSwitch checked={autoStop} onChange={setAutoStop} />} last />
           </div>
-          <p style={{ padding: "0 16px 6px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.04em" }}>MARKET SELECTION</p>
-          <div style={{ background: DARK_PANEL, margin: "0 14px 8px", borderRadius: 14, padding: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"].map((m) => (
-              <div key={m} onClick={() => handleSymbolSelect(m)} style={{ padding: "6px 13px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: selectedSymbol === m ? `1px solid ${TG_BLUE}` : `1px solid ${DARK_BORDER}`, background: selectedSymbol === m ? `${TG_BLUE}1f` : "rgba(255,255,255,0.02)", color: selectedSymbol === m ? TG_BLUE : MUTED, fontWeight: 600 }}>
-                {m}
-              </div>
+          <p style={{ padding: "0 0 8px", fontSize: 12, color: MUTED, fontWeight: 700, letterSpacing: "0.06em" }}>MARKET</p>
+          <div style={{ ...glass, marginBottom: 8, padding: 14, display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT"].map(m => (
+              <div key={m} onClick={() => handleSymbolSelect(m)} style={{ padding: "6px 14px", borderRadius: 20, fontSize: 12, cursor: "pointer", border: selectedSymbol === m ? `1px solid ${TG_BLUE}` : `1px solid ${GLASS_BORDER}`, background: selectedSymbol === m ? `${TG_BLUE}22` : "rgba(255,255,255,0.02)", color: selectedSymbol === m ? TG_BLUE : MUTED, fontWeight: 600 }}>{m}</div>
             ))}
           </div>
         </div>
@@ -155,36 +234,21 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   );
 }
 
+// ─── SignalsScreen ──────────────────────────────────────────
 function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", paperMode }) {
-  // ─── Persisted state ──────────────────────────────────────────────────
-  const [messages, setMessages] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('hila_messages')) || []; } catch { return []; }
-  });
-  const [price, setPrice] = useState(() => {
-    try { return parseFloat(localStorage.getItem('hila_price')) || null; } catch { return null; }
-  });
-  const [priceHistory, setPriceHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('hila_priceHistory')) || []; } catch { return []; }
-  });
-  const [signalHistory, setSignalHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('hila_signalHistory')) || []; } catch { return []; }
-  });
-  const [tickCount, setTickCount] = useState(() => {
-    try { return parseInt(localStorage.getItem('hila_tickCount')) || 0; } catch { return 0; }
-  });
-  const [paperBalance, setPaperBalance] = useState(() => {
-    try { return parseFloat(localStorage.getItem('hila_paperBalance')) || null; } catch { return null; }
-  });
-  const [currentSignal, setCurrentSignal] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('hila_currentSignal')) || { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } catch { return { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; }
-  });
+  const [messages, setMessages] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_messages')) || []; } catch { return []; } });
+  const [price, setPrice] = useState(() => { try { return parseFloat(localStorage.getItem('hila_price')) || null; } catch { return null; } });
+  const [priceHistory, setPriceHistory] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_priceHistory')) || []; } catch { return []; } });
+  const [signalHistory, setSignalHistory] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_signalHistory')) || []; } catch { return []; } });
+  const [tickCount, setTickCount] = useState(() => { try { return parseInt(localStorage.getItem('hila_tickCount')) || 0; } catch { return 0; } });
+  const [paperBalance, setPaperBalance] = useState(() => { try { return parseFloat(localStorage.getItem('hila_paperBalance')) || null; } catch { return null; } });
+  const [currentSignal, setCurrentSignal] = useState(() => { try { return JSON.parse(localStorage.getItem('hila_currentSignal')) || { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } catch { return { signal: 'HOLD', confidence: 0, reason: 'Waiting...' }; } });
   const [analyzing, setAnalyzing] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
   const scrollRef = useRef(null);
   const wsRef = useRef(null);
   const lastPriceRef = useRef(null);
 
-  // ─── Persist to localStorage ──────────────────────────────────────────
   useEffect(() => localStorage.setItem('hila_messages', JSON.stringify(messages)), [messages]);
   useEffect(() => localStorage.setItem('hila_price', price !== null ? String(price) : ''), [price]);
   useEffect(() => localStorage.setItem('hila_priceHistory', JSON.stringify(priceHistory)), [priceHistory]);
@@ -193,7 +257,6 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   useEffect(() => { if (paperBalance !== null) localStorage.setItem('hila_paperBalance', String(paperBalance)); }, [paperBalance]);
   useEffect(() => localStorage.setItem('hila_currentSignal', JSON.stringify(currentSignal)), [currentSignal]);
 
-  // ─── WebSocket ──────────────────────────────────────────────────
   useEffect(() => {
     const sym = selectedSymbol.toLowerCase().replace('/', '').replace('usdt', 'usdt@trade');
     const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
@@ -204,11 +267,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         const newPrice = parseFloat(data.p);
         setPrice(newPrice);
         setTickCount(prev => prev + 1);
-        setPriceHistory(prev => {
-          const u = [...prev, newPrice];
-          return u.slice(-50);
-        });
-        // ─── AUTO‑ANALYSE ON EVERY TICK ────────────────────────
+        setPriceHistory(prev => { const u = [...prev, newPrice]; return u.slice(-50); });
         if (priceHistory.length > 10 && lastPriceRef.current !== newPrice) {
           lastPriceRef.current = newPrice;
           runAnalysis(newPrice);
@@ -218,7 +277,6 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     return () => wsRef.current?.close();
   }, [selectedSymbol]);
 
-  // ─── Agent status ──────────────────────────────────────────────
   useEffect(() => {
     const interval = setInterval(() => {
       fetch('/api/agent/status')
@@ -232,12 +290,8 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     return () => clearInterval(interval);
   }, []);
 
-  // ─── Scroll ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
 
-  // ─── Indicators ────────────────────────────────────────────────
   function calcIndicators(prices) {
     if (prices.length < 10) return { rsi: 50, ema: prices[prices.length-1] || 0, macd: 0 };
     const gains = [], losses = [];
@@ -256,7 +310,6 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     return { rsi: Math.round(rsi), ema: Math.round(ema), macd: parseFloat(macd.toFixed(4)) };
   }
 
-  // ─── Analysis ──────────────────────────────────────────────────
   const runAnalysis = async (currentPrice) => {
     if (analyzing || !currentPrice || priceHistory.length < 10) return;
     setAnalyzing(true);
@@ -282,15 +335,11 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
         signal: data,
         reason: data.reason,
       }]);
-      setSignalHistory(prev => {
-        const u = [...prev, { signal: data.signal, confidence: data.confidence, price: currentPrice, time: new Date().toISOString() }];
-        return u.slice(-30);
-      });
+      setSignalHistory(prev => { const u = [...prev, { signal: data.signal, confidence: data.confidence, price: currentPrice, time: new Date().toISOString() }]; return u.slice(-30); });
     } catch (e) { console.error('Analysis error:', e); }
     setAnalyzing(false);
   };
 
-  // ─── Manual ──────────────────────────────────────────────────
   const runManual = async () => {
     if (!price) { setMessages(prev => [...prev, { type: 'bot', time: 'now', text: '⏳ Waiting for price...' }]); return; }
     setAnalyzing(true);
@@ -335,29 +384,29 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: DARK_BG }}>
-      <div style={{ flexShrink: 0, padding: "10px 14px", display: "flex", gap: 8, overflowX: "auto" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", background: DARK_BG, backgroundImage: "radial-gradient(circle at 30% 0%, rgba(42,171,238,0.08), transparent 60%)" }}>
+      <div style={{ flexShrink: 0, padding: "12px 16px", display: "flex", gap: 10, overflowX: "auto" }}>
         <StatChip label="Bot" value={agentRunning ? "Running" : "Stopped"} color={agentRunning ? GREEN : MUTED} dot={agentRunning} />
         <StatChip label="Balance" value={binance.connected ? `$${binance.balance}` : "Not linked"} color={binance.connected ? TEXT : MUTED} />
         {paperMode && paperBalance !== null && <StatChip label="Paper Balance" value={`$${paperBalance.toFixed(2)}`} color={GOLD} />}
         <StatChip label="Ticks" value={tickCount} color={TG_BLUE} />
       </div>
-      <div style={{ flexShrink: 0, margin: "0 14px 10px", background: DARK_PANEL, borderRadius: 14, padding: 12, height: 200 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-          <span style={{ fontSize: 11, color: MUTED }}>AI Market Chart</span>
+      <div style={{ flexShrink: 0, margin: "0 16px 12px", ...glass, padding: "12px", height: 220 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+          <span style={{ fontSize: 11, color: MUTED, letterSpacing: "0.04em" }}>AI Market Chart</span>
           <span style={{ fontSize: 11, color: MUTED }}>{price ? `$${price.toFixed(2)}` : "Loading..."}</span>
         </div>
         <Chart priceHistory={priceHistory} signals={signalHistory} />
       </div>
       {!binance.connected && (
-        <div onClick={onOpenSettings} style={{ flexShrink: 0, margin: "0 14px 10px", background: "rgba(240,180,41,0.1)", border: "1px solid rgba(240,180,41,0.3)", borderRadius: 12, padding: "10px 14px", fontSize: 12.5, color: GOLD, cursor: "pointer", display: "flex", justifyContent: "space-between" }}>
+        <div onClick={onOpenSettings} style={{ flexShrink: 0, margin: "0 16px 12px", ...glass, padding: "10px 16px", fontSize: 13, color: GOLD, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <span>⚠️ Connect your Binance account to start live trading</span>
-          <span>›</span>
+          <span style={{ fontSize: 18 }}>›</span>
         </div>
       )}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "6px 14px 14px" }}>
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "6px 16px 16px" }}>
         <div style={{ textAlign: "center", margin: "8px 0 16px" }}>
-          <span style={{ background: "rgba(255,255,255,0.06)", color: MUTED, fontSize: 11, padding: "4px 12px", borderRadius: 12 }}>
+          <span style={{ ...glass, padding: "4px 16px", borderRadius: 20, fontSize: 11, color: MUTED, background: "rgba(255,255,255,0.05)" }}>
             📊 {currentSignal.signal} · {currentSignal.confidence}% · {tickCount} ticks
           </span>
         </div>
@@ -368,7 +417,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
               {m.signal && (
                 <>
                   <SignalChip signal={m.signal.signal} confidence={m.signal.confidence || 0} risk={m.signal.risk || "LOW"} />
-                  <p style={{ fontSize: 12.5, color: "#9fb3c0", marginTop: 8, fontStyle: "italic" }}>"{m.reason}"</p>
+                  <p style={{ fontSize: 13, color: "#9fb3c0", marginTop: 8, fontStyle: "italic" }}>"{m.reason}"</p>
                 </>
               )}
             </BotBubble>
@@ -382,11 +431,11 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
           </BotBubble>
         )}
       </div>
-      <div style={{ flexShrink: 0, padding: "10px 12px", borderTop: `1px solid ${DARK_BORDER}`, background: DARK_PANEL, display: "flex", gap: 8 }}>
-        <button onClick={runManual} style={pill(TG_BLUE)}>🧠 Analyze</button>
-        <button onClick={startAgent} style={pill(GREEN)}>▶ Start</button>
-        <button onClick={stopAgent} style={pill(GOLD)}>⏸ Pause</button>
-        <button style={pill(RED)}>⏹ Stop</button>
+      <div style={{ flexShrink: 0, padding: "12px 16px", borderTop: `1px solid ${GLASS_BORDER}`, background: "rgba(0,0,0,0.3)", display: "flex", gap: 8 }}>
+        <button onClick={runManual} style={{ ...pill(TG_BLUE), flex: 1 }}>🧠 Analyze</button>
+        <button onClick={startAgent} style={{ ...pill(GREEN), flex: 1 }}>▶ Start</button>
+        <button onClick={stopAgent} style={{ ...pill(GOLD), flex: 1 }}>⏸ Pause</button>
+        <button style={{ ...pill(RED), flex: 1 }}>⏹ Stop</button>
       </div>
     </div>
   );
@@ -394,21 +443,22 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
 
 function StatChip({ label, value, color, dot }) {
   return (
-    <div style={{ background: DARK_PANEL, borderRadius: 14, padding: "8px 14px", minWidth: 80, flexShrink: 0 }}>
-      <p style={{ fontSize: 10.5, color: MUTED, display: "flex", alignItems: "center", gap: 5 }}>
+    <div style={{ ...glass, padding: "8px 14px", minWidth: 80, flexShrink: 0, borderRadius: "30px", background: "rgba(255,255,255,0.04)" }}>
+      <p style={{ fontSize: 10, color: MUTED, display: "flex", alignItems: "center", gap: 5, letterSpacing: "0.04em" }}>
         {dot && <span style={{ width: 6, height: 6, borderRadius: "50%", background: GREEN }} />}
         {label}
       </p>
-      <p style={{ fontSize: 14.5, fontWeight: 700, color: color || TEXT, fontFamily: "monospace", marginTop: 2 }}>{value}</p>
+      <p style={{ fontSize: 15, fontWeight: 700, color: color || TEXT, fontFamily: "monospace", marginTop: 2 }}>{value}</p>
     </div>
   );
 }
 
-function TradesScreen() { return <div style={{ padding: 16, color: MUTED }}>Trades (real data from Supabase)</div>; }
-function HistoryScreen() { return <div style={{ padding: 16, color: MUTED }}>History (real data from Supabase)</div>; }
-function ProfileScreen({ user, binance, onOpenSettings }) { return <div style={{ padding: 16, color: MUTED }}>Profile</div>; }
-function AdminScreen() { return <div style={{ padding: 16, color: MUTED }}>Admin</div>; }
+function TradesScreen() { return <div style={{ padding: 16, color: MUTED, textAlign: "center" }}>📈 Real trades (Supabase)</div>; }
+function HistoryScreen() { return <div style={{ padding: 16, color: MUTED, textAlign: "center" }}>📋 Trade history</div>; }
+function ProfileScreen() { return <div style={{ padding: 16, color: MUTED, textAlign: "center" }}>👤 Profile</div>; }
+function AdminScreen() { return <div style={{ padding: 16, color: MUTED, textAlign: "center" }}>🛡️ Admin</div>; }
 
+// ─── BottomNav ────────────────────────────────────────────────
 function BottomNav({ tab, setTab, isAdmin }) {
   const tabs = [
     { id: "signals", icon: "💬", label: "Signals" },
@@ -420,17 +470,18 @@ function BottomNav({ tab, setTab, isAdmin }) {
   ];
   if (isAdmin) tabs.push({ id: "admin", icon: "🛡️", label: "Admin" });
   return (
-    <div style={{ display: "flex", background: DARK_PANEL, borderTop: `1px solid ${DARK_BORDER}`, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }}>
-      {tabs.map((t) => (
-        <button key={t.id} onClick={() => setTab(t.id)} style={{ flex: 1, background: "none", border: "none", padding: "8px 0 6px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, cursor: "pointer", color: tab === t.id ? TG_BLUE : MUTED }}>
-          <span style={{ fontSize: 19, lineHeight: 1 }}>{t.icon}</span>
-          <span style={{ fontSize: 10.5, fontWeight: tab === t.id ? 700 : 500 }}>{t.label}</span>
+    <div style={{ display: "flex", background: "rgba(20,28,36,0.8)", backdropFilter: "blur(20px)", borderTop: `1px solid ${GLASS_BORDER}`, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom)" }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => setTab(t.id)} style={{ flex: 1, background: "none", border: "none", padding: "8px 0 4px", display: "flex", flexDirection: "column", alignItems: "center", gap: 1, cursor: "pointer", color: tab === t.id ? TG_BLUE : MUTED, transition: "color 0.2s" }}>
+          <span style={{ fontSize: 20 }}>{t.icon}</span>
+          <span style={{ fontSize: 10, fontWeight: tab === t.id ? 700 : 500 }}>{t.label}</span>
         </button>
       ))}
     </div>
   );
 }
 
+// ─── Root ──────────────────────────────────────────────────────
 export default function HilaBotMiniApp() {
   const [tab, setTab] = useState("signals");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -480,7 +531,7 @@ export default function HilaBotMiniApp() {
     setPaperMode(value);
     try {
       await fetch("/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }) });
-    } catch (err) { console.error("Failed to save paper mode", err); }
+    } catch (err) { console.error(err); }
   };
 
   const screens = {
@@ -488,14 +539,20 @@ export default function HilaBotMiniApp() {
     dashboard: <Dashboard binance={binance} email={CURRENT_USER.email} />,
     trades: <TradesScreen />,
     history: <HistoryScreen />,
-    profile: <ProfileScreen user={CURRENT_USER} binance={binance} onOpenSettings={() => setSettingsOpen(true)} />,
+    profile: <ProfileScreen />,
     backtest: <Backtest />,
     admin: isAdmin ? <AdminScreen /> : <SignalsScreen binance={binance} onOpenSettings={() => setSettingsOpen(true)} selectedSymbol={selectedSymbol} paperMode={paperMode} />,
   };
 
   return (
-    <div style={{ fontFamily: sysFont, color: TEXT, height: "100vh", width: "100%", background: DARK_BG, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      <style>{`@keyframes tgBounce { 0%,80%,100%{transform:translateY(0);opacity:0.4} 40%{transform:translateY(-4px);opacity:1} } * { box-sizing: border-box; } ::-webkit-scrollbar { width: 0; height: 0; } html, body { margin:0; padding:0; }`}</style>
+    <div style={{ fontFamily: font, color: TEXT, height: "100vh", width: "100%", background: DARK_BG, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <style>{`
+        @keyframes tgBounce { 0%,80%,100%{transform:translateY(0);opacity:0.4} 40%{transform:translateY(-4px);opacity:1} }
+        * { box-sizing: border-box; }
+        ::-webkit-scrollbar { width: 0; height: 0; }
+        html, body { margin:0; padding:0; }
+        button { font-family: inherit; }
+      `}</style>
       <AppHeader onOpenSettings={() => setSettingsOpen(true)} binanceConnected={binance.connected} />
       <div style={{ flex: 1, overflow: "hidden" }}>{screens[tab]}</div>
       <BottomNav tab={tab} setTab={setTab} isAdmin={isAdmin} />
