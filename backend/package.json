@@ -30,6 +30,6 @@
     "socket.io": "^4.8.3",
     "technicalindicators": "^3.1.0",
     "uuid": "^14.0.1",
-    "ws": "^8.21.0"
+    "ws": "^8.21.1"
   }
 }
