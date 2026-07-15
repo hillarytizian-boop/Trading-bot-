@@ -2,21 +2,20 @@ const router = require('express').Router();
 const supabase = require('../db');
 const Binance = require('binance-api-node').default;
 
+// ─── Connect ──────────────────────────────────────────────────────
 router.post('/connect', async (req, res) => {
   const { email, apiKey, secretKey } = req.body;
-  console.log('[Binance] Connect request:', { email, apiKey: apiKey?.slice(0,4)+'...', secretKey: secretKey?.slice(0,4)+'...' });
+  console.log('[Binance] Connect:', { email, apiKey: apiKey?.slice(0,4), secretKey: secretKey?.slice(0,4) });
 
   if (!email || !apiKey || !secretKey) {
-    console.error('[Binance] Missing fields:', { email: !!email, apiKey: !!apiKey, secretKey: !!secretKey });
     return res.status(400).json({ error: 'Missing email, apiKey, or secretKey' });
   }
 
   try {
     const client = Binance({ apiKey: apiKey.trim(), secretKey: secretKey.trim() });
-    const account = await client.accountInfo();
-    console.log('[Binance] Account info success:', account.accountType);
+    await client.accountInfo();
   } catch (err) {
-    console.error('[Binance] Connection error:', err.message);
+    console.error('[Binance] Invalid keys:', err.message);
     return res.status(400).json({ error: 'Invalid Binance API keys: ' + err.message });
   }
 
@@ -26,14 +25,14 @@ router.post('/connect', async (req, res) => {
     .eq('email', email);
 
   if (error) {
-    console.error('[Binance] Supabase update error:', error);
+    console.error('[Binance] Supabase error:', error);
     return res.status(500).json({ error: error.message });
   }
 
-  console.log('[Binance] Keys saved for', email);
   res.json({ success: true, message: 'Keys saved and verified' });
 });
 
+// ─── Status ──────────────────────────────────────────────────────
 router.get('/status', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Missing email' });
@@ -45,6 +44,7 @@ router.get('/status', async (req, res) => {
   res.json({ connected: !!(data?.binance_api_key) });
 });
 
+// ─── Balance ──────────────────────────────────────────────────────
 router.get('/balance', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Missing email' });

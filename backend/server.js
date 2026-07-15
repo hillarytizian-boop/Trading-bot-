@@ -3,6 +3,23 @@ const cors = require('cors');
 const path = require('path');
 const compression = require('compression');
 
+// ─── Safe require wrapper ──────────────────────────────────────────
+function safeRequire(routePath) {
+  try {
+    const mod = require(routePath);
+    if (typeof mod === 'function') return mod;
+    if (mod && typeof mod === 'object' && mod.router) return mod.router;
+    // If it's an object with no router, return a fallback
+    if (mod && typeof mod === 'object') {
+      return (req, res) => res.status(501).json({ error: `${routePath} is not a router` });
+    }
+    return (req, res) => res.status(501).json({ error: `${routePath} not implemented` });
+  } catch (e) {
+    console.warn(`⚠️ Route ${routePath} not found – using fallback`);
+    return (req, res) => res.status(501).json({ error: `${routePath} unavailable` });
+  }
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -10,37 +27,25 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 
-// ─── Import routes ──────────────────────────────────────────────
-const authRoutes = require('./routes/auth');
-const binanceRoutes = require('./routes/binance');
-const aiRoutes = require('./routes/ai');
-const botRoutes = require('./routes/bot');
-const adminRoutes = require('./routes/admin');
-const tradeRoutes = require('./routes/trades');
-const agentRoutes = require('./routes/agent');
-const backtestRoutes = require('./routes/backtest');
-const userRoutes = require('./routes/user');
-
-// ─── Mount routes ──────────────────────────────────────────────
-app.use('/api/auth', authRoutes);
-app.use('/api/binance', binanceRoutes);
-app.use('/api/ai', aiRoutes);
-app.use('/api/bot', botRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/trades', tradeRoutes);
-app.use('/api/agent', agentRoutes);
-app.use('/api/backtest', backtestRoutes);
-app.use('/api/user', userRoutes);
+// ─── Mount routes ──────────────────────────────────────────────────
+app.use('/api/auth', safeRequire('./routes/auth'));
+app.use('/api/binance', safeRequire('./routes/binance'));
+app.use('/api/ai', safeRequire('./routes/ai'));
+app.use('/api/bot', safeRequire('./routes/bot'));
+app.use('/api/admin', safeRequire('./routes/admin'));
+app.use('/api/trades', safeRequire('./routes/trades'));
+app.use('/api/agent', safeRequire('./routes/agent'));
+app.use('/api/backtest', safeRequire('./routes/backtest'));
+app.use('/api/user', safeRequire('./routes/user'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
-// ─── DEBUG: Print all registered routes ──────────────────────
+// ─── Debug: print routes ──────────────────────────────────────────
 console.log('✅ Registered API routes:');
 app._router.stack.forEach((layer) => {
   if (layer.route) {
     console.log(`  ${Object.keys(layer.route.methods).join(',')} ${layer.route.path}`);
   } else if (layer.name === 'router' && layer.regexp) {
-    // For mounted routers, print their child routes
     const basePath = layer.regexp.source
       .replace(/\\\//g, '/')
       .replace(/\^/g, '')
@@ -57,11 +62,11 @@ app._router.stack.forEach((layer) => {
 });
 console.log('✅ Route listing complete.\n');
 
-// ─── Serve static frontend ─────────────────────────────────────
+// ─── Serve static frontend ──────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
-// ─── Catch‑all for SPA ────────────────────────────────────────
+// ─── Catch‑all for SPA ──────────────────────────────────────────
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });
