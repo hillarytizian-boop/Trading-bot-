@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const OpenAI = require('openai');
-const fetch = require('node-fetch'); // ✅ explicitly required
+const fetch = require('node-fetch'); // v2 works with require()
 
 // ─── Check if key is set ──────────────────────────────────────────
 const hasKey = !!process.env.NVIDIA_API_KEY;
