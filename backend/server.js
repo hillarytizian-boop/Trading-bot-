@@ -10,7 +10,6 @@ app.use(cors());
 app.use(compression());
 app.use(express.json());
 
-// ─── Helper to safely require routes ────────────────────────────
 function safeRequire(routePath) {
   try {
     const module = require(routePath);
@@ -19,36 +18,31 @@ function safeRequire(routePath) {
     if (module && typeof module === 'object') return module;
     return (req, res) => res.status(501).json({ error: `${routePath} not implemented` });
   } catch (e) {
-    console.warn(`⚠️ Route ${routePath} not found, using fallback`);
-    return (req, res) => res.status(501).json({ error: `${routePath} not available` });
+    console.error(`❌ Failed to load ${routePath}:`, e.message);
+    console.error(e.stack);
+    return (req, res) => res.status(501).json({ error: `${routePath} not available: ${e.message}` });
   }
 }
 
-// ─── Mount routes ──────────────────────────────────────────────────
 console.log('✅ Mounting routes...');
-app.use('/api/auth', safeRequire('./routes/auth'));
-app.use("/api/ai", safeRequire("./routes/ai"));
-app.use('/api/binance', safeRequire('./routes/binance'));
+app.use('/api/auth', safeRequire('./routes/auth.js'));
+app.use('/api/binance', safeRequire('./routes/binance.js'));
 app.use('/api/ai', safeRequire('./routes/ai.js'));
-app.use('/api/bot', safeRequire('./routes/bot'));
-app.use('/api/admin', safeRequire('./routes/admin'));
-app.use('/api/trades', safeRequire('./routes/trades'));
-app.use("/api/backtest", safeRequire("./routes/backtest"));
-app.use('/api/agent', safeRequire('./routes/agent'));
-app.use("/api/trade", safeRequire("./routes/trade"));
-app.use("/api/backtest", safeRequire("./routes/backtest"));
-app.use('/api/backtest', safeRequire('./routes/backtest'));
-app.use('/api/user', safeRequire('./routes/user'));
-app.use("/api/signal", safeRequire("./routes/signal"));
+app.use('/api/bot', safeRequire('./routes/bot.js'));
+app.use('/api/admin', safeRequire('./routes/admin.js'));
+app.use('/api/trades', safeRequire('./routes/trades.js'));
+app.use('/api/agent', safeRequire('./routes/agent.js'));
+app.use('/api/backtest', safeRequire('./routes/backtest.js'));
+app.use('/api/user', safeRequire('./routes/user.js'));
+app.use('/api/trade', safeRequire('./routes/trade.js'));
+app.use('/api/signal', safeRequire('./routes/signal.js'));
 console.log('✅ Routes mounted');
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 
-// ─── Serve static frontend ────────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
-// ─── Catch‑all for SPA ────────────────────────────────────────────
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });
