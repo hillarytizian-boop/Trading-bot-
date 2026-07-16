@@ -1,8 +1,7 @@
 const router = require('express').Router();
 const OpenAI = require('openai');
-const technical = require('technicalindicators');
+const fetch = require('node-fetch');
 
-// ─── NVIDIA API client ──────────────────────────────────────────
 const nvidiaClient = new OpenAI({
   baseURL: 'https://integrate.api.nvidia.com/v1',
   apiKey: process.env.NVIDIA_API_KEY,
@@ -10,177 +9,6 @@ const nvidiaClient = new OpenAI({
 
 const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
-// ─── Calculate real technical indicators ──────────────────────
-function calculateIndicators(closes) {
-  if (!closes || closes.length < 30) return null;
-
-  const rsi = technical.RSI.calculate({ values: closes, period: 14 });
-  const macd = technical.MACD.calculate({
-    values: closes,
-    fastPeriod: 12,
-    slowPeriod: 26,
-    signalPeriod: 9,
-  });
-  const bb = technical.BollingerBands.calculate({
-    values: closes,
-    period: 20,
-    stdDev: 2,
-  });
-  const ema20 = technical.EMA.calculate({ values: closes, period: 20 });
-  const ema50 = technical.EMA.calculate({ values: closes, period: 50 });
-  const atr = technical.ATR.calculate({
-    high: closes.map(c => c * 1.001),
-    low: closes.map(c => c * 0.999),
-    close: closes,
-    period: 14,
-  });
-
-  return {
-    rsi: rsi[rsi.length-1] || 50,
-    macd: macd[macd.length-1] || { MACD: 0, signal: 0 },
-    bb: bb[bb.length-1] || { upper: closes[closes.length-1] * 1.02, lower: closes[closes.length-1] * 0.98 },
-    ema20: ema20[ema20.length-1] || closes[closes.length-1],
-    ema50: ema50[ema50.length-1] || closes[closes.length-1],
-    atr: atr[atr.length-1] || 0,
-    price: closes[closes.length-1],
-  };
-}
-
-// ─── Generate signal from indicators (fallback) ──────────────
-function generateSignal(ind) {
-  if (!ind) return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data' };
-
-  let score = 0;
-  let reasons = [];
-
-  // RSI
-  if (ind.rsi < 30) { score += 3; reasons.push(`RSI oversold (${ind.rsi.toFixed(1)})`); }
-  else if (ind.rsi > 70) { score -= 3; reasons.push(`RSI overbought (${ind.rsi.toFixed(1)})`); }
-  else if (ind.rsi < 45) { score += 1; reasons.push(`RSI low (${ind.rsi.toFixed(1)})`); }
-  else if (ind.rsi > 55) { score -= 1; reasons.push(`RSI high (${ind.rsi.toFixed(1)})`); }
-  else { reasons.push(`RSI neutral (${ind.rsi.toFixed(1)})`); }
-
-  // MACD
-  const macdDiff = ind.macd.MACD - ind.macd.signal;
-  if (macdDiff > 0) { score += 2; reasons.push('MACD bullish'); }
-  else if (macdDiff < 0) { score -= 2; reasons.push('MACD bearish'); }
-  else { reasons.push('MACD neutral'); }
-
-  // Bollinger Bands
-  const bbPos = (ind.price - ind.bb.lower) / (ind.bb.upper - ind.bb.lower);
-  if (bbPos < 0.2) { score += 2; reasons.push('Price near lower BB'); }
-  else if (bbPos > 0.8) { score -= 2; reasons.push('Price near upper BB'); }
-  else { reasons.push('Price within BB'); }
-
-  // EMA crossover
-  if (ind.ema20 > ind.ema50) { score += 1; reasons.push('EMA20 > EMA50'); }
-  else if (ind.ema20 < ind.ema50) { score -= 1; reasons.push('EMA20 < EMA50'); }
-  else { reasons.push('EMA20 = EMA50'); }
-
-  // Determine signal
-  let signal = 'HOLD';
-  let confidence = 30;
-  let reason = reasons.join('; ');
-
-  if (score >= 5) {
-    signal = 'BUY';
-    confidence = Math.min(70 + (score - 5) * 5, 100);
-    reason = `Strong BUY: ${reason}`;
-  } else if (score <= -5) {
-    signal = 'SELL';
-    confidence = Math.min(70 + (Math.abs(score) - 5) * 5, 100);
-    reason = `Strong SELL: ${reason}`;
-  } else if (score >= 3) {
-    signal = 'BUY';
-    confidence = 50 + (score - 3) * 8;
-    reason = `Moderate BUY: ${reason}`;
-  } else if (score <= -3) {
-    signal = 'SELL';
-    confidence = 50 + (Math.abs(score) - 3) * 8;
-    reason = `Moderate SELL: ${reason}`;
-  } else {
-    signal = 'HOLD';
-    confidence = 30 + Math.abs(score) * 5;
-    reason = `HOLD: ${reason}`;
-  }
-
-  confidence = Math.min(confidence, 100);
-  confidence = Math.max(confidence, 20);
-
-  return { signal, confidence, reason };
-}
-
-// ─── Main endpoint ────────────────────────────────────────────────
-router.post('/analyze', async (req, res) => {
-  const { market, price, indicators, email, closes } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email required' });
-
-  try {
-    // ─── Try NVIDIA AI first ──────────────────────────────────────
-    const rsi = indicators?.rsi ?? 50;
-    const macd = indicators?.macd ?? 0;
-    const ema = indicators?.ema ?? price;
-
-
-    const results = await Promise.allSettled(
-      MODELS.map(model => queryNvidiaModel(model, prompt))
-    );
-    const successful = results
-      .filter(r => r.status === 'fulfilled' && r.value.success)
-      .map(r => r.value.data);
-
-    if (successful.length > 0) {
-      const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
-      successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
-      const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
-      const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
-
-      return res.json({
-        signal: finalSignal,
-        confidence: avgConfidence,
-        reason: `NVIDIA AI: ${successful.map(d => d.reason).join(' ')}`,
-        breakdown: successful.map((d, i) => ({
-          model: MODELS[i],
-          signal: d.signal,
-          confidence: d.confidence,
-          reason: d.reason,
-        })),
-      });
-    }
-
-    // ─── Fallback: technical indicators ──────────────────────────
-    let closesData = closes || [];
-    if (closesData.length < 30) {
-      // Try to fetch from Binance if not provided
-      try {
-        const url = `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=50`;
-        const response = await fetch(url);
-        const data = await response.json();
-        closesData = data.map(c => parseFloat(c[4]));
-      } catch (e) {
-        console.warn('Could not fetch candles, using provided data');
-      }
-    }
-
-    const ind = calculateIndicators(closesData);
-    const result = generateSignal(ind);
-    return res.json(result);
-
-  } catch (error) {
-    console.error('[AI] Error:', error.message);
-    // Ultimate fallback: use provided indicators
-    const rsi = indicators?.rsi ?? 50;
-    const macd = indicators?.macd ?? 0;
-    let signal = 'HOLD';
-    let confidence = 30;
-    let reason = 'Fallback';
-    if (rsi < 30) { signal = 'BUY'; confidence = 70; reason = 'RSI oversold'; }
-    else if (rsi > 70) { signal = 'SELL'; confidence = 70; reason = 'RSI overbought'; }
-    return res.json({ signal, confidence, reason });
-  }
-});
-
-// ─── NVIDIA query helper ──────────────────────────────────────────
 async function queryNvidiaModel(model, prompt) {
   try {
     const completion = await nvidiaClient.chat.completions.create({
@@ -188,7 +16,7 @@ async function queryNvidiaModel(model, prompt) {
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.7,
       top_p: 0.95,
-      max_tokens: 256,
+      max_tokens: 300,
       stream: false,
     });
     const content = completion.choices[0].message.content;
@@ -207,7 +35,7 @@ async function queryNvidiaModel(model, prompt) {
       data: {
         signal: signalMatch ? signalMatch[0].toUpperCase() : 'HOLD',
         confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : 50,
-        reason: content.slice(0, 200) || 'Analysis complete',
+        reason: content.slice(0, 200) || 'No reason',
       },
     };
   } catch (error) {
@@ -216,17 +44,137 @@ async function queryNvidiaModel(model, prompt) {
   }
 }
 
-// ─── Status endpoint ───────────────────────────────────────────────
-router.get('/status', async (req, res) => {
+function calculateIndicators(closes) {
+  if (!closes || closes.length < 14) return null;
+  // RSI
+  let gains = 0, losses = 0;
+  for (let i = 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i-1];
+    if (diff >= 0) gains += diff;
+    else losses += -diff;
+  }
+  const avgGain = gains / (closes.length - 1);
+  const avgLoss = losses / (closes.length - 1);
+  const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+  // MACD (simplified)
+  const ema12 = closes.slice(-12).reduce((a,b) => a+b, 0) / Math.min(12, closes.length);
+  const ema26 = closes.slice(-26).reduce((a,b) => a+b, 0) / Math.min(26, closes.length);
+  const macd = ema12 - ema26;
+  // EMA20, EMA50
+  const ema20 = closes.slice(-20).reduce((a,b) => a+b, 0) / Math.min(20, closes.length);
+  const ema50 = closes.slice(-50).reduce((a,b) => a+b, 0) / Math.min(50, closes.length);
+  // ATR
+  let atr = 0;
+  if (closes.length > 14) {
+    let trSum = 0;
+    for (let i = 1; i < closes.length; i++) {
+      const high = closes[i] * 1.001;
+      const low = closes[i] * 0.999;
+      const prevClose = closes[i-1];
+      trSum += Math.max(high - low, Math.abs(high - prevClose), Math.abs(low - prevClose));
+    }
+    atr = trSum / (closes.length - 1);
+  }
+  return { rsi, macd, ema20, ema50, atr };
+}
+
+router.post('/analyze', async (req, res) => {
+  const { email, market, price, indicators, closes } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+
   try {
-    await nvidiaClient.chat.completions.create({
-      model: 'deepseek-ai/deepseek-v4-pro',
-      messages: [{ role: 'user', content: 'Hello' }],
-      max_tokens: 10,
+    // ─── Use provided closes, or fallback to fetching ────────────
+    let closesData = closes;
+    if (!closesData || closesData.length < 14) {
+      const symbol = market?.replace('/', '') || 'BTCUSDT';
+      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=50`;
+      const response = await fetch(url);
+      const data = await response.json();
+      closesData = data.map(c => parseFloat(c[4]));
+    }
+
+    const ind = calculateIndicators(closesData);
+    if (!ind) {
+      return res.json({ signal: 'HOLD', confidence: 0, reason: 'Insufficient data' });
+    }
+
+    const { rsi, macd, ema20, ema50, atr } = ind;
+    const currentPrice = price || closesData[closesData.length-1];
+
+    // ─── Build prompt with all indicators ──────────────────────────
+    const prompt = `You are a professional cryptocurrency trader.
+
+Analyze:
+Price: $${currentPrice}
+RSI: ${rsi.toFixed(2)}
+MACD: ${macd.toFixed(4)}
+EMA20: ${ema20.toFixed(2)}
+EMA50: ${ema50.toFixed(2)}
+ATR: ${atr.toFixed(4)}
+
+Respond ONLY as JSON:
+{
+  "signal":"BUY",
+  "confidence":84,
+  "reason":"..."
+}
+
+Never return HOLD unless there is genuinely no trading edge.`;
+
+    // ─── Query NVIDIA models ──────────────────────────────────────
+    const results = await Promise.allSettled(
+      MODELS.map(model => queryNvidiaModel(model, prompt))
+    );
+    const successful = results
+      .filter(r => r.status === 'fulfilled' && r.value.success)
+      .map(r => r.value.data);
+
+    if (successful.length > 0) {
+      const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
+      successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
+      const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
+      const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
+      const reasons = successful.map(d => d.reason);
+      return res.json({
+        signal: finalSignal,
+        confidence: avgConfidence,
+        reason: `NVIDIA AI: ${reasons.join(' ')}`,
+        breakdown: successful.map((d, i) => ({
+          model: MODELS[i] || 'unknown',
+          signal: d.signal,
+          confidence: d.confidence,
+          reason: d.reason,
+        })),
+      });
+    }
+
+    // ─── Fallback: rule-based scoring ─────────────────────────────
+    let score = 0;
+    let reasons = [];
+    if (rsi < 30) { score += 2; reasons.push('RSI oversold'); }
+    else if (rsi > 70) { score -= 2; reasons.push('RSI overbought'); }
+    else if (rsi < 45) { score += 1; reasons.push('RSI low'); }
+    else if (rsi > 55) { score -= 1; reasons.push('RSI high'); }
+    if (macd > 0) { score += 1; reasons.push('MACD positive'); }
+    else if (macd < 0) { score -= 1; reasons.push('MACD negative'); }
+    if (currentPrice > ema20 && ema20 > ema50) { score += 1; reasons.push('Uptrend'); }
+    else if (currentPrice < ema20 && ema20 < ema50) { score -= 1; reasons.push('Downtrend'); }
+
+    let signal = 'HOLD';
+    let confidence = 30;
+    if (score >= 2) { signal = 'BUY'; confidence = 60 + score * 5; }
+    else if (score <= -2) { signal = 'SELL'; confidence = 60 + Math.abs(score) * 5; }
+    else { signal = 'HOLD'; confidence = 30 + Math.abs(score) * 5; }
+    confidence = Math.min(confidence, 100);
+
+    res.json({
+      signal,
+      confidence,
+      reason: `Fallback: ${reasons.join(', ')}`,
     });
-    res.json({ nvidia: 'connected', models: MODELS });
   } catch (error) {
-    res.json({ nvidia: 'error', message: error.message });
+    console.error('[AI] Error:', error.message);
+    res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message });
   }
 });
 

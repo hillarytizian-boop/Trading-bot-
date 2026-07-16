@@ -27,6 +27,7 @@ function safeRequire(routePath) {
 // ─── Mount routes ──────────────────────────────────────────────────
 console.log('✅ Mounting routes...');
 app.use('/api/auth', safeRequire('./routes/auth'));
+app.use("/api/ai", safeRequire("./routes/ai"));
 app.use('/api/binance', safeRequire('./routes/binance'));
 app.use('/api/ai', safeRequire('./routes/ai'));
 app.use('/api/bot', safeRequire('./routes/bot'));
