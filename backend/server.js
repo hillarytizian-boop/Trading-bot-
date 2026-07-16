@@ -29,7 +29,7 @@ console.log('✅ Mounting routes...');
 app.use('/api/auth', safeRequire('./routes/auth'));
 app.use("/api/ai", safeRequire("./routes/ai"));
 app.use('/api/binance', safeRequire('./routes/binance'));
-app.use('/api/ai', safeRequire('./routes/ai'));
+app.use('/api/ai', safeRequire('./routes/ai.js'));
 app.use('/api/bot', safeRequire('./routes/bot'));
 app.use('/api/admin', safeRequire('./routes/admin'));
 app.use('/api/trades', safeRequire('./routes/trades'));

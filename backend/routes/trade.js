@@ -40,61 +40,35 @@ async function queryNvidiaModel(model, prompt) {
       },
     };
   } catch (error) {
-    return {
-      model,
-      success: true,
-      data: {
-        signal: 'HOLD',
-        confidence: 30,
-        reason: 'AI error – holding position',
-      },
-    };
-  }
-}
-
-async function calculateATR(symbol) {
-  try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=14`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const highs = data.map(c => parseFloat(c[2]));
-    const lows = data.map(c => parseFloat(c[3]));
-    const closes = data.map(c => parseFloat(c[4]));
-    let trSum = 0;
-    for (let i = 1; i < closes.length; i++) {
-      trSum += Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1]));
-    }
-    return trSum / (closes.length - 1);
-  } catch (e) {
-    return 0.02 * 1000;
+    return { model, success: false, error: error.message };
   }
 }
 
 router.post('/auto', async (req, res) => {
-  const { email, symbol, price, indicators, closes } = req.body;
+  const { email, symbol, price, indicators } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   try {
+    const rsi = indicators?.rsi ?? 50;
+    const macd = indicators?.macd ?? 0;
+    const ema = indicators?.ema ?? price;
     const market = symbol || 'BTCUSDT';
-    const currentPrice = price || 0;
 
-    const atr = await calculateATR(market);
-    const slMultiplier = 2.5;
-    const tpMultiplier = 5;
-
-    const prompt = `Current BTC/USDT price: $${currentPrice}
-RSI: ${indicators?.rsi ?? 50}
-MACD: ${indicators?.macd ?? 0}
-EMA20: ${indicators?.ema ?? currentPrice}
-EMA50: ${indicators?.ema50 ?? 'N/A'}
-ATR: ${atr.toFixed(2)}
-
-Provide a trading signal (BUY, SELL, or HOLD) with confidence and reason. Respond with JSON.`;
+    const prompt = `You are a professional cryptocurrency trader.
+Current BTC/USDT price: $${price}
+RSI: ${rsi}
+MACD: ${macd}
+EMA20: ${ema}
+EMA50: ${indicators?.ema50 || 'N/A'}
+ATR: ${indicators?.atr || 'N/A'}
+Respond ONLY as JSON:
+{"signal":"BUY","confidence":84,"reason":"..."}
+Never return HOLD unless genuinely no edge.`;
 
     const results = await Promise.allSettled(MODELS.map(m => queryNvidiaModel(m, prompt)));
     const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).map(r => r.value.data);
     if (successful.length === 0) {
-      return res.json({ signal: 'HOLD', confidence: 30, reason: 'No AI response – holding' });
+      return res.json({ signal: 'HOLD', confidence: 0, reason: 'NVIDIA unavailable' });
     }
 
     const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
@@ -102,7 +76,7 @@ Provide a trading signal (BUY, SELL, or HOLD) with confidence and reason. Respon
     const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
     const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
 
-    if (finalSignal === 'HOLD' || avgConfidence < 70) {
+    if (finalSignal === 'HOLD' || avgConfidence < 60) {
       return res.json({ signal: 'HOLD', confidence: avgConfidence, reason: 'Low confidence' });
     }
 
@@ -113,20 +87,18 @@ Provide a trading signal (BUY, SELL, or HOLD) with confidence and reason. Respon
 
     const user = await supabase.from('users').select('paper_balance').eq('email', email).single();
     const balance = user.data?.paper_balance || 1000;
-    const riskPct = 0.01;
-    let tradeAmount = Math.min(balance * riskPct, 0.50);
-    tradeAmount = Math.max(tradeAmount, 0.10);
-    const quantity = tradeAmount / currentPrice;
+    const tradeAmount = Math.min(balance * 0.01, 0.50);
+    const quantity = tradeAmount / price;
 
-    const slDistance = atr * slMultiplier;
-    const tpDistance = atr * tpMultiplier;
+    const slPercent = 2;
+    const tpPercent = 5;
     let stopLoss, takeProfit;
     if (finalSignal === 'BUY') {
-      stopLoss = currentPrice - slDistance;
-      takeProfit = currentPrice + tpDistance;
+      stopLoss = price * (1 - slPercent / 100);
+      takeProfit = price * (1 + tpPercent / 100);
     } else {
-      stopLoss = currentPrice + slDistance;
-      takeProfit = currentPrice - tpDistance;
+      stopLoss = price * (1 + slPercent / 100);
+      takeProfit = price * (1 - tpPercent / 100);
     }
 
     const tradeId = uuidv4();
@@ -135,7 +107,7 @@ Provide a trading signal (BUY, SELL, or HOLD) with confidence and reason. Respon
       user_email: email,
       symbol: market,
       type: finalSignal,
-      entry_price: currentPrice,
+      entry_price: price,
       quantity: quantity,
       stop_loss: stopLoss,
       take_profit: takeProfit,
@@ -150,11 +122,11 @@ Provide a trading signal (BUY, SELL, or HOLD) with confidence and reason. Respon
       signal: finalSignal,
       confidence: avgConfidence,
       reason: `NVIDIA AI: ${successful.map(d => d.reason).join(' ')}`,
-      trade: { id: tradeId, type: finalSignal, entryPrice: currentPrice, quantity, stopLoss, takeProfit },
+      trade: { id: tradeId, type: finalSignal, entryPrice: price, quantity, stopLoss, takeProfit },
     });
   } catch (error) {
     console.error('[AutoTrade] Error:', error.message);
-    res.json({ signal: 'HOLD', confidence: 20, reason: 'Error – holding position' });
+    res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message });
   }
 });
 
