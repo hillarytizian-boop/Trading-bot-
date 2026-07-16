@@ -121,7 +121,6 @@ router.post('/analyze', async (req, res) => {
     const macd = indicators?.macd ?? 0;
     const ema = indicators?.ema ?? price;
 
-    const prompt = `BTC/USDT price: $${price}, RSI: ${rsi}, EMA: ${ema}, MACD: ${macd}. Provide trading signal (BUY/SELL/HOLD) with confidence and reason. JSON only.`;
 
     const results = await Promise.allSettled(
       MODELS.map(model => queryNvidiaModel(model, prompt))

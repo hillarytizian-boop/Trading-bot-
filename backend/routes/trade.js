@@ -203,7 +203,6 @@ async function ensembleSignal(symbol, price, indicators) {
   const macd = indicators?.macd ?? 0;
   const ema = indicators?.ema ?? price;
 
-  const prompt = `BTC/USDT: $${price}, RSI: ${rsi}, MACD: ${macd}, EMA: ${ema}. Signal (BUY/SELL/HOLD) with confidence and reason. JSON only.`;
   const results = await Promise.allSettled(MODELS.map(m => queryNvidiaModel(m, prompt)));
   const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).map(r => r.value.data);
   if (successful.length === 0) return null;
