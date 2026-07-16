@@ -98,13 +98,18 @@ async function getAIAnalysis(email, market, price, closes) {
       const response = await fetch(url);
       const data = await response.json();
       
-      // ─── Handle Binance error response ──────────────────────────
+      // ─── Log the raw response for debugging ──────────────────────
+      console.log('[AI] Binance raw response type:', typeof data);
+      console.log('[AI] Binance raw response (first 200 chars):', JSON.stringify(data).slice(0, 200));
+
+      // ─── Ensure we got an array ──────────────────────────────────
       if (!Array.isArray(data)) {
-        console.error('[AI] Binance API error:', data);
+        const errorMsg = data.msg || 'Unknown Binance error';
+        console.error('[AI] Binance returned non-array:', data);
         return { 
           signal: 'HOLD', 
           confidence: 0, 
-          reason: `Binance error: ${data.msg || 'unknown'}` 
+          reason: `Binance error: ${errorMsg}` 
         };
       }
       
@@ -114,12 +119,13 @@ async function getAIAnalysis(email, market, price, closes) {
       }
       
       closesData = data.map(c => parseFloat(c[4]));
+      console.log(`[AI] Successfully parsed ${closesData.length} close prices`);
     }
     
     const ind = getIndicators(closesData);
     if (!ind) {
       console.log('[AI] Not enough indicators');
-      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data' };
+      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need at least 14 candles)' };
     }
 
     const { rsi, macd, ema20, ema50, atr } = ind;
