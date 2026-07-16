@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const OpenAI = require('openai');
-const fetch = require('node-fetch');
+const fetch = require('node-fetch'); // ✅ explicitly required
 
 // ─── Check if key is set ──────────────────────────────────────────
 const hasKey = !!process.env.NVIDIA_API_KEY;
@@ -22,7 +22,7 @@ if (hasKey) {
 
 const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
-// ─── Query functions (unchanged) ──────────────────────────────────
+// ─── Query functions ──────────────────────────────────────────────
 async function queryNvidiaModel(model, prompt) {
   if (!nvidiaClient) {
     return { model, success: false, error: 'No API key configured' };
@@ -151,7 +151,7 @@ Never return HOLD unless there is genuinely no trading edge.`;
   }
 }
 
-// ─── Endpoint: analyze (POST) ─────────────────────────────────────
+// ─── Endpoints ──────────────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const { email, market, price, closes } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
@@ -160,7 +160,6 @@ router.post('/analyze', async (req, res) => {
   res.json(result);
 });
 
-// ─── Endpoint: status (GET) – safe debug ──────────────────────────
 router.get('/status', (req, res) => {
   const key = process.env.NVIDIA_API_KEY;
   res.json({
