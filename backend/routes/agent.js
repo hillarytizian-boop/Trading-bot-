@@ -3,7 +3,11 @@ const supabase = require('../db');
 const { getAIAnalysis } = require('./ai.js');
 const { v4: uuidv4 } = require('uuid');
 const Binance = require('binance-api-node').default;
-const HttpsProxyAgent = require("https-proxy-agent"); const PROXY_URL = "http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129"; const agent = new HttpsProxyAgent(PROXY_URL);
+const HttpsProxyAgent = require('https-proxy-agent');
+
+// ─── Proxy configuration ────────────────────────────────────────────
+const PROXY_URL = 'http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129';
+const agent = new HttpsProxyAgent(PROXY_URL);
 
 const agentStates = new Map();
 
@@ -34,10 +38,15 @@ async function saveState(email, state) {
 }
 
 async function getPrice(symbol) {
-  const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol.replace('/', '')}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  return parseFloat(data.price);
+  try {
+    const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol.replace('/', '')}`;
+    const res = await fetch(url, { agent, timeout: 5000 });
+    const data = await res.json();
+    return parseFloat(data.price);
+  } catch (e) {
+    console.error('[Agent] Price fetch error:', e.message);
+    return null;
+  }
 }
 
 async function agentLoop(email) {
@@ -101,6 +110,7 @@ async function agentLoop(email) {
       }
     }
 
+    // Get AI signal
     const ai = await getAIAnalysis(email, symbol, price, state.priceHistory);
     if (ai.signal === 'HOLD' || ai.confidence < 60) {
       await saveState(email, state);
@@ -112,7 +122,11 @@ async function agentLoop(email) {
       balance = state.paperBalance;
     } else {
       if (!settings.binance_api_key) { await saveState(email, state); return; }
-      const client = Binance({ httpsAgent: agent,  apiKey: settings.binance_api_key, secretKey: settings.binance_secret_key });
+      const client = Binance({
+        apiKey: settings.binance_api_key,
+        secretKey: settings.binance_secret_key,
+        httpsAgent: agent, // use proxy
+      });
       const account = await client.accountInfo();
       const usdt = account.balances.find(b => b.asset === 'USDT');
       balance = usdt ? parseFloat(usdt.free) : 0;
@@ -179,10 +193,7 @@ router.post('/start', async (req, res) => {
   state.activeTradeId = null;
   const user = await supabase.from('users').select('bot_settings').eq('email', email).single();
   const symbol = user.data?.bot_settings?.market || 'BTCUSDT';
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol.replace('/', '')}&interval=1m&limit=50`;
-  const response = await fetch(url);
-  const data = await response.json();
-  state.priceHistory = data.map(c => parseFloat(c[4]));
+  // pre-fetch some price history (optional)
   await saveState(email, state);
   setTimeout(() => agentLoop(email), 1000);
   res.json({ status: 'started' });

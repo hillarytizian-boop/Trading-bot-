@@ -1,4 +1,4 @@
-// ─── WebSocket polyfill for OpenAI ──────────────────────────────
+global.WebSocket = require('ws');
 
 const router = require('express').Router();
 const OpenAI = require('openai');
@@ -52,6 +52,7 @@ router.post('/analyze', async (req, res) => {
 
   try {
     const data = await instance.getAnalysisData(symbol);
+    console.log(`[AI] Fetched ${data.closes.length} candles for ${symbol}`);
     if (!data || !data.closes || data.closes.length < 14) {
       return res.json({ signal: 'HOLD', confidence: 0, reason: 'Insufficient data from Binance' });
     }
