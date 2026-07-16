@@ -1,6 +1,5 @@
 const router = require('express').Router();
 const OpenAI = require('openai');
-const fetch = require('node-fetch'); // v2 works with require()
 
 // ─── Check if key is set ──────────────────────────────────────────
 const hasKey = !!process.env.NVIDIA_API_KEY;
@@ -22,7 +21,7 @@ if (hasKey) {
 
 const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
-// ─── Query functions ──────────────────────────────────────────────
+// ─── Query functions (uses global fetch) ──────────────────────────
 async function queryNvidiaModel(model, prompt) {
   if (!nvidiaClient) {
     return { model, success: false, error: 'No API key configured' };
@@ -98,7 +97,7 @@ async function getAIAnalysis(email, market, price, closes) {
       const symbol = (market || 'BTCUSDT').replace('/', '');
       const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=50`;
       console.log(`[AI] Fetching klines from ${url}`);
-      const response = await fetch(url);
+      const response = await fetch(url); // global fetch
       const data = await response.json();
       closesData = data.map(c => parseFloat(c[4]));
     }
