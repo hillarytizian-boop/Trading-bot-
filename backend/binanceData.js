@@ -79,7 +79,7 @@ class DataFetcher {
     }
   }
 
-  async getAnalysisData(symbol = 'BTCUSDT') {
+  async getAnalysisData(symbol = .BTCUSDT.) { symbol = symbol.replace(//, .);
     const price = await this.getPrice(symbol);
     const history = await this.getCandles(symbol);
     return {

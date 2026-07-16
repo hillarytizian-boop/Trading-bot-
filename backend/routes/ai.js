@@ -47,7 +47,7 @@ async function queryNvidiaModel(model, prompt) {
 }
 
 router.post('/analyze', async (req, res) => {
-  const { email, symbol = req.body.market || 'BTCUSDT' } = req.body;
+  const { email, symbol: rawSymbol = req.body.market || .BTCUSDT. } = req.body; const symbol = rawSymbol.replace(//, .);
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   try {
