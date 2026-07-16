@@ -1,17 +1,13 @@
 const router = require('express').Router();
 const supabase = require('../db');
+const { getAIAnalysis } = require('./ai.js');
 const { v4: uuidv4 } = require('uuid');
-const axios = require('axios');
+const Binance = require('binance-api-node').default;
 
-// ─── CONFIG ──────────────────────────────────────────────────────────
-const CONFIG = {
-  confidenceThreshold: 60,
-  maxTradeAmount: 0.50,
-  minTradeAmount: 0.10,
-};
+// ─── State per user ──────────────────────────────────────────────
+const agentStates = new Map(); // email -> { running, interval }
 
-// ─── PERSISTENT STATE ──────────────────────────────────────────────
-async function loadAgentState(email) {
+async function loadState(email) {
   const { data, error } = await supabase
     .from('users')
     .select('agent_state')
@@ -22,166 +18,143 @@ async function loadAgentState(email) {
       running: false,
       tradesToday: 0,
       dailyLoss: 0,
-      totalPnL: 0,
-      activeTradeId: null,
-      tradeOpenTime: null,
       paperBalance: 1000,
       priceHistory: [],
-      lastTradeAttempt: null,
+      activeTradeId: null,
       consecutiveWins: 0,
       consecutiveLosses: 0,
-      startingBalance: 1000,
+      totalPnL: 0,
     };
   }
   return data.agent_state;
 }
 
-async function saveAgentState(email, state) {
+async function saveState(email, state) {
   await supabase.from('users').update({ agent_state: state }).eq('email', email);
 }
 
-async function getCandles(symbol, interval = '1m', limit = 50) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+// ─── Get current price ──────────────────────────────────────────────
+async function getPrice(symbol) {
+  const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol.replace('/', '')}`;
   const res = await fetch(url);
   const data = await res.json();
-  return data.map(c => parseFloat(c[4]));
+  return parseFloat(data.price);
 }
 
-let processingLock = false;
-
+// ─── Agent loop for a single user ──────────────────────────────────
 async function agentLoop(email) {
-  if (processingLock) return;
-  processingLock = true;
+  const state = await loadState(email);
+  if (!state.running) return;
 
   try {
-    const state = await loadAgentState(email);
-    if (!state.running) { processingLock = false; return; }
-
-    const settingsRes = await supabase
+    const user = await supabase
       .from('users')
-      .select('bot_settings, paper_balance')
+      .select('bot_settings, paper_balance, binance_api_key, binance_secret_key')
       .eq('email', email)
       .single();
-    const settings = settingsRes.data || {};
+    const settings = user.data || {};
     const isPaper = settings.bot_settings?.paperMode !== false;
     const symbol = settings.bot_settings?.market || 'BTCUSDT';
 
-    // Get price and update history
-    const priceRes = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
-    const priceData = await priceRes.json();
-    const price = parseFloat(priceData.price);
-    if (!price) { processingLock = false; return; }
+    const price = await getPrice(symbol);
+    if (!price) throw new Error('Price fetch failed');
 
+    // Update price history
     state.priceHistory.push(price);
     if (state.priceHistory.length > 100) state.priceHistory.shift();
-    if (state.priceHistory.length < 20) {
-      const closes = await getCandles(symbol);
-      state.priceHistory = closes;
-    }
 
     // ─── Check open trade ──────────────────────────────────────────
     if (state.activeTradeId) {
-      const trade = await supabase
+      const { data: trade } = await supabase
         .from('trades')
         .select('*')
         .eq('id', state.activeTradeId)
         .single();
-      if (trade.data) {
-        const t = trade.data;
-        const entryPrice = t.entry_price;
-        const side = t.type;
 
-        // ─── Ask AI for exit decision ──────────────────────────────
-        try {
-          const exitRes = await axios.post('http://localhost:10000/api/ai/exit', {
-            email,
-            price,
-            closes: state.priceHistory,
-            entryPrice,
-            side,
-          });
-          const exitData = exitRes.data;
-          if (exitData.shouldExit) {
-            // Close the trade
-            const pnl = (side === 'BUY') ? (price - entryPrice) * t.quantity : (entryPrice - price) * t.quantity;
-            await supabase.from('trades').update({
-              exit_price: price,
-              pnl: pnl,
-              status: 'closed',
-              closed_at: new Date().toISOString(),
-              close_reason: 'AI_EXIT',
-            }).eq('id', state.activeTradeId);
-
-            if (isPaper) {
-              state.paperBalance += pnl;
-            }
-            state.activeTradeId = null;
-            state.tradeOpenTime = null;
-            if (pnl > 0) state.consecutiveWins++; else state.consecutiveLosses++;
-            state.totalPnL += pnl;
-            if (pnl < 0) state.dailyLoss += Math.abs(pnl);
-            await saveAgentState(email, state);
-
-            // Learn from the trade
-            try {
-              await axios.post('http://localhost:10000/api/ai/learn', {
-                email,
-                trade: { pnl, indicators: t.indicators || {} },
-              });
-            } catch (learnErr) { console.error('AI learn error:', learnErr); }
-
-            processingLock = false;
-            return;
-          }
-        } catch (err) {
-          console.error('AI exit call failed:', err);
-          // Fallback: use fixed SL/TP
-          // Not needed because we'll rely on AI, but we could add a fallback.
+      if (trade && trade.status === 'open') {
+        const entry = trade.entry_price;
+        const sl = trade.stop_loss;
+        const tp = trade.take_profit;
+        const elapsed = (new Date() - new Date(trade.opened_at)) / 1000;
+        let closed = false;
+        if (trade.type === 'BUY') {
+          if (price <= sl || price >= tp || elapsed > 120) closed = true;
+        } else {
+          if (price >= sl || price <= tp || elapsed > 120) closed = true;
         }
+        if (closed) {
+          const pnl = (trade.type === 'BUY') ? (price - entry) * trade.quantity : (entry - price) * trade.quantity;
+          await supabase.from('trades').update({
+            exit_price: price,
+            pnl: pnl,
+            status: 'closed',
+            closed_at: new Date().toISOString(),
+          }).eq('id', state.activeTradeId);
 
-        processingLock = false;
+          if (isPaper) {
+            state.paperBalance += pnl;
+          } else {
+            // Real balance update would come from Binance later
+          }
+          state.totalPnL += pnl;
+          if (pnl > 0) state.consecutiveWins++; else state.consecutiveLosses++;
+          if (pnl < 0) state.dailyLoss += Math.abs(pnl);
+          state.activeTradeId = null;
+          await saveState(email, state);
+        }
+        // If still open, exit early
         return;
       } else {
+        // Trade not found or already closed
         state.activeTradeId = null;
-        await saveAgentState(email, state);
-        processingLock = false;
-        return;
+        await saveState(email, state);
       }
     }
 
-    // ─── No open trade – get entry signal ──────────────────────────
-    const closes = state.priceHistory;
-    if (closes.length < 20) { processingLock = false; return; }
-
-    const aiRes = await axios.post('http://localhost:10000/api/ai/analyze', {
-      email,
-      market: symbol,
-      price,
-      indicators: { rsi: 50, macd: 0, ema: price * 0.99 },
-      closes,
-    });
-    const signal = aiRes.data;
-
-    if (signal.signal === 'HOLD' || signal.confidence < CONFIG.confidenceThreshold) {
-      state.lastTradeAttempt = `HOLD (${signal.confidence}%)`;
-      await saveAgentState(email, state);
-      processingLock = false;
+    // ─── No open trade – get AI signal ────────────────────────────
+    const ai = await getAIAnalysis(email, symbol, price, state.priceHistory);
+    if (ai.signal === 'HOLD' || ai.confidence < 60) {
+      // No trade
+      await saveState(email, state);
       return;
     }
 
-    // ─── Position sizing ──────────────────────────────────────────
-    const balance = isPaper ? state.paperBalance : 1000;
+    // ─── Determine balance ──────────────────────────────────────────
+    let balance;
+    if (isPaper) {
+      balance = state.paperBalance;
+    } else {
+      if (!settings.binance_api_key) {
+        await saveState(email, state);
+        return;
+      }
+      const client = Binance({
+        apiKey: settings.binance_api_key,
+        secretKey: settings.binance_secret_key,
+      });
+      const account = await client.accountInfo();
+      const usdt = account.balances.find(b => b.asset === 'USDT');
+      balance = usdt ? parseFloat(usdt.free) : 0;
+    }
+
     if (balance < 1) {
-      state.lastTradeAttempt = 'Balance < $1';
-      await saveAgentState(email, state);
-      processingLock = false;
+      await saveState(email, state);
       return;
     }
 
-    // Use AI for sizing (but we'll keep a simple Kelly)
-    let tradeAmount = Math.min(balance * 0.01, CONFIG.maxTradeAmount);
-    tradeAmount = Math.max(tradeAmount, CONFIG.minTradeAmount);
+    // ─── Position sizing – max $0.50 ──────────────────────────────
+    let tradeAmount = Math.min(balance * 0.01, 0.50);
     const quantity = tradeAmount / price;
+
+    const slPercent = 2, tpPercent = 5;
+    let stopLoss, takeProfit;
+    if (ai.signal === 'BUY') {
+      stopLoss = price * (1 - slPercent/100);
+      takeProfit = price * (1 + tpPercent/100);
+    } else {
+      stopLoss = price * (1 + slPercent/100);
+      takeProfit = price * (1 - tpPercent/100);
+    }
 
     // ─── Execute trade ──────────────────────────────────────────────
     const tradeId = uuidv4();
@@ -189,85 +162,81 @@ async function agentLoop(email) {
       id: tradeId,
       user_email: email,
       symbol: symbol,
-      type: signal.signal,
+      type: ai.signal,
       entry_price: price,
       quantity: quantity,
-      stop_loss: 0,
-      take_profit: 0,
-      duration: 0,
-      signal_confidence: signal.confidence,
-      signal_reason: signal.reason,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
       status: 'open',
       opened_at: new Date().toISOString(),
+      signal_confidence: ai.confidence,
+      signal_reason: ai.reason,
       is_paper: isPaper,
-      indicators: signal.breakdown || {},
     }]);
 
     state.activeTradeId = tradeId;
-    state.tradeOpenTime = new Date();
     state.tradesToday++;
-    state.lastTradeAttempt = `✅ ${signal.signal} at ${price} ($${tradeAmount.toFixed(2)})`;
-    await saveAgentState(email, state);
+    await saveState(email, state);
 
-    console.log(`📄 ${isPaper ? 'PAPER' : 'REAL'} TRADE: ${signal.signal} ${symbol} at ${price} ($${tradeAmount.toFixed(2)})`);
+    console.log(`📈 AGENT: ${ai.signal} ${symbol} at ${price}, amount $${tradeAmount.toFixed(2)}`);
 
   } catch (error) {
-    console.error('[Agent] Loop error:', error);
+    console.error('Agent loop error:', error.message);
   } finally {
-    processingLock = false;
-    const state = await loadAgentState(email);
-    if (state.running) {
-      setTimeout(() => agentLoop(email), 1000);
+    // Schedule next loop if still running
+    const refreshed = await loadState(email);
+    if (refreshed.running) {
+      setTimeout(() => agentLoop(email), 5000);
     }
   }
 }
 
-// ─── ENDPOINTS ──────────────────────────────────────────────────────
-
+// ─── Start / Stop endpoints ──────────────────────────────────────
 router.post('/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  try {
-    const state = await loadAgentState(email);
-    if (state.running) return res.json({ status: 'already running' });
+  const state = await loadState(email);
+  if (state.running) return res.json({ status: 'already running' });
 
-    state.running = true;
-    state.tradesToday = 0;
-    state.dailyLoss = 0;
-    state.totalPnL = 0;
-    state.priceHistory = [];
-    state.lastTradeAttempt = null;
+  state.running = true;
+  state.tradesToday = 0;
+  state.dailyLoss = 0;
+  state.totalPnL = 0;
+  state.consecutiveWins = 0;
+  state.consecutiveLosses = 0;
+  state.activeTradeId = null;
 
-    const settings = (await supabase.from('users').select('bot_settings').eq('email', email).single()).data || {};
-    const symbol = settings.bot_settings?.market || 'BTCUSDT';
-    const closes = await getCandles(symbol);
-    state.priceHistory = closes;
+  // Seed price history
+  const user = await supabase.from('users').select('bot_settings').eq('email', email).single();
+  const symbol = user.data?.bot_settings?.market || 'BTCUSDT';
+  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol.replace('/', '')}&interval=1m&limit=50`;
+  const response = await fetch(url);
+  const data = await response.json();
+  state.priceHistory = data.map(c => parseFloat(c[4]));
 
-    await saveAgentState(email, state);
-    processingLock = false;
-    setTimeout(() => agentLoop(email), 1000);
+  await saveState(email, state);
 
-    res.json({ status: 'started' });
-  } catch (err) {
-    console.error('[Agent] Start error:', err);
-    res.status(500).json({ error: err.message });
-  }
+  // Start the loop
+  setTimeout(() => agentLoop(email), 1000);
+
+  res.json({ status: 'started' });
 });
 
 router.post('/stop', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
-  const state = await loadAgentState(email);
+
+  const state = await loadState(email);
   state.running = false;
-  await saveAgentState(email, state);
+  await saveState(email, state);
   res.json({ status: 'stopped' });
 });
 
 router.get('/status', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Email required' });
-  const state = await loadAgentState(email);
+  const state = await loadState(email);
   res.json(state);
 });
 
