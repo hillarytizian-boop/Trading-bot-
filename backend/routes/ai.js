@@ -1,5 +1,4 @@
 // ─── WebSocket polyfill for OpenAI ──────────────────────────────
-global.WebSocket = require('ws');
 
 const router = require('express').Router();
 const OpenAI = require('openai');

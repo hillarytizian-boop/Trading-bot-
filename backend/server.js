@@ -1,3 +1,6 @@
+// ─── Global WebSocket polyfill (must be before any route) ──────
+global.WebSocket = require('ws');
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');

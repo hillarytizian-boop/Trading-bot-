@@ -1,16 +1,17 @@
 const Binance = require('binance-api-node').default;
-const supabase = require('./db');
 
 class BinanceDataFetcher {
   constructor() {
-    this.client = Binance();
+    // Use api1.binance.com to avoid regional blocks
+    this.client = Binance({
+      baseUrl: 'https://api1.binance.com'
+    });
     this.symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'];
     this.priceCache = {};
     this.historyCache = {};
     this.lastUpdate = {};
   }
 
-  // ─── Fetch current price ──────────────────────────────────────────
   async getPrice(symbol = 'BTCUSDT') {
     try {
       const ticker = await this.client.prices({ symbol });
@@ -24,7 +25,6 @@ class BinanceDataFetcher {
     }
   }
 
-  // ─── Fetch candle history ─────────────────────────────────────────
   async getCandles(symbol = 'BTCUSDT', interval = '1m', limit = 50) {
     try {
       const candles = await this.client.candles({ symbol, interval, limit });
@@ -41,7 +41,6 @@ class BinanceDataFetcher {
     }
   }
 
-  // ─── Get all price data for analysis ──────────────────────────────
   async getAnalysisData(symbol = 'BTCUSDT') {
     const price = await this.getPrice(symbol);
     const history = await this.getCandles(symbol);
@@ -56,10 +55,8 @@ class BinanceDataFetcher {
     };
   }
 
-  // ─── Calculate technical indicators ──────────────────────────────
   calculateIndicators(closes) {
     if (!closes || closes.length < 14) return null;
-    // RSI
     let gains = 0, losses = 0;
     for (let i = 1; i < closes.length; i++) {
       const diff = closes[i] - closes[i-1];
@@ -69,14 +66,11 @@ class BinanceDataFetcher {
     const avgGain = gains / (closes.length - 1);
     const avgLoss = losses / (closes.length - 1);
     const rsi = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
-    // MACD
     const ema12 = closes.slice(-12).reduce((a,b) => a+b, 0) / Math.min(12, closes.length);
     const ema26 = closes.slice(-26).reduce((a,b) => a+b, 0) / Math.min(26, closes.length);
     const macd = ema12 - ema26;
-    // EMA20 and EMA50
     const ema20 = closes.slice(-20).reduce((a,b) => a+b, 0) / Math.min(20, closes.length);
     const ema50 = closes.slice(-50).reduce((a,b) => a+b, 0) / Math.min(50, closes.length);
-    // ATR
     let atr = 0;
     if (closes.length > 14) {
       let trSum = 0;
@@ -88,15 +82,12 @@ class BinanceDataFetcher {
       }
       atr = trSum / (closes.length - 1);
     }
-    // Bollinger Bands
     const sma = closes.slice(-20).reduce((a,b) => a+b, 0) / Math.min(20, closes.length);
     const std = Math.sqrt(closes.slice(-20).reduce((a,b) => a + Math.pow(b - sma, 2), 0) / Math.min(20, closes.length));
     const bbUpper = sma + 2 * std;
     const bbLower = sma - 2 * std;
-    // VWAP (simplified)
     const typical = closes.map((c, i) => (c + (closes[i] || c) + (closes[i] || c)) / 3);
     const vwap = typical.reduce((a,b) => a+b, 0) / typical.length;
-    // ADX (simplified)
     let adx = 25;
     return {
       rsi,
@@ -112,7 +103,6 @@ class BinanceDataFetcher {
     };
   }
 
-  // ─── Format data for AI prompt ────────────────────────────────────
   formatForAI(data) {
     const ind = this.calculateIndicators(data.closes);
     if (!ind) return null;
@@ -135,10 +125,8 @@ class BinanceDataFetcher {
   }
 }
 
-// ─── Singleton instance ─────────────────────────────────────────────
 const instance = new BinanceDataFetcher();
 
-// ─── Periodic update function ──────────────────────────────────────
 async function updateAllPrices() {
   for (const symbol of instance.symbols) {
     try {
@@ -150,10 +138,8 @@ async function updateAllPrices() {
   }
 }
 
-// ─── Start periodic updates (every 60 seconds) ────────────────────
 if (process.env.NODE_ENV !== 'test') {
   setInterval(updateAllPrices, 60000);
-  // Initial update
   setTimeout(updateAllPrices, 1000);
 }
 
