@@ -1,10 +1,21 @@
 const router = require("express").Router();
 const Binance = require("binance-api-node").default;
 const supabase = require("../db");
+const { HttpsProxyAgent } = require("https-proxy-agent");
 
-// ======================================================
-// Create Binance Client
-// ======================================================
+// ─── Get a proxy agent if configured ──────────────────────────────
+function getProxyAgent() {
+  const proxyUrl = process.env.BINANCE_PROXY_URL;
+  if (!proxyUrl) return null;
+  try {
+    return new HttpsProxyAgent(proxyUrl);
+  } catch (err) {
+    console.warn("Invalid proxy URL:", err.message);
+    return null;
+  }
+}
+
+// ─── Create Binance Client (with optional proxy) ──────────────────
 async function getBinanceClient(email) {
   const { data, error } = await supabase
     .from("users")
@@ -20,20 +31,35 @@ async function getBinanceClient(email) {
     throw new Error("Binance API keys not found.");
   }
 
-  return Binance({
+  const config = {
     apiKey: data.binance_api_key.trim(),
-    apiSecret: data.binance_secret_key.trim()
-  });
+    apiSecret: data.binance_secret_key.trim(),
+  };
+
+  const agent = getProxyAgent();
+  if (agent) {
+    config.httpAgent = agent;
+    config.httpsAgent = agent;
+    console.log("Using proxy for Binance API");
+  }
+
+  return Binance(config);
 }
 
 // ======================================================
 // Validate Binance API Keys
 // ======================================================
 async function validateKeys(apiKey, secretKey) {
-  const client = Binance({
+  const config = {
     apiKey: apiKey.trim(),
-    apiSecret: secretKey.trim()
-  });
+    apiSecret: secretKey.trim(),
+  };
+  const agent = getProxyAgent();
+  if (agent) {
+    config.httpAgent = agent;
+    config.httpsAgent = agent;
+  }
+  const client = Binance(config);
 
   try {
     const account = await client.accountInfo();
@@ -45,6 +71,9 @@ async function validateKeys(apiKey, secretKey) {
     throw new Error(err.message);
   }
 }
+
+// ─── All endpoints (connect, disconnect, status, account, balance, price, ticker, exchangeInfo, klines, orders, etc.) ───
+// (They are unchanged – the proxy is applied automatically through getBinanceClient and validateKeys)
 
 // ======================================================
 // Connect Binance
@@ -253,21 +282,43 @@ router.get("/price", async (req, res) => {
 
   try {
     const client = Binance();
-    const prices = await client.prices();
-
-    if (!prices[symbol]) {
-      return res.status(404).json({
-        success: false,
-        error: "Invalid symbol."
+    const agent = getProxyAgent();
+    if (agent) {
+      // We need to recreate the client with the agent for this request
+      // But for price, we can use the public endpoint without auth, so proxy is optional.
+      // However, to be safe we'll use the proxy if configured.
+      const config = {};
+      if (agent) {
+        config.httpAgent = agent;
+        config.httpsAgent = agent;
+      }
+      const proxiedClient = Binance(config);
+      const prices = await proxiedClient.prices();
+      if (!prices[symbol]) {
+        return res.status(404).json({
+          success: false,
+          error: "Invalid symbol."
+        });
+      }
+      res.json({
+        success: true,
+        symbol,
+        price: prices[symbol]
+      });
+    } else {
+      const prices = await client.prices();
+      if (!prices[symbol]) {
+        return res.status(404).json({
+          success: false,
+          error: "Invalid symbol."
+        });
+      }
+      res.json({
+        success: true,
+        symbol,
+        price: prices[symbol]
       });
     }
-
-    res.json({
-      success: true,
-      symbol,
-      price: prices[symbol]
-    });
-
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -292,13 +343,18 @@ router.get("/ticker", async (req, res) => {
 
   try {
     const client = Binance();
-    // Try dailyStats first, fallback to prices
+    const agent = getProxyAgent();
     let ticker;
+    const config = {};
+    if (agent) {
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+    }
+    const proxiedClient = agent ? Binance(config) : client;
     try {
-      ticker = await client.dailyStats({ symbol });
+      ticker = await proxiedClient.dailyStats({ symbol });
     } catch (statsErr) {
-      // If dailyStats fails, use prices as fallback
-      const prices = await client.prices();
+      const prices = await proxiedClient.prices();
       ticker = { symbol, price: prices[symbol] || 'N/A' };
     }
 
@@ -322,7 +378,14 @@ router.get("/ticker", async (req, res) => {
 router.get("/exchangeInfo", async (req, res) => {
   try {
     const client = Binance();
-    const info = await client.exchangeInfo();
+    const agent = getProxyAgent();
+    const config = {};
+    if (agent) {
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+    }
+    const proxiedClient = agent ? Binance(config) : client;
+    const info = await proxiedClient.exchangeInfo();
 
     res.json({
       success: true,
@@ -347,7 +410,14 @@ router.get("/klines", async (req, res) => {
 
   try {
     const client = Binance();
-    const candles = await client.candles({
+    const agent = getProxyAgent();
+    const config = {};
+    if (agent) {
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+    }
+    const proxiedClient = agent ? Binance(config) : client;
+    const candles = await proxiedClient.candles({
       symbol,
       interval,
       limit: 500
@@ -584,7 +654,14 @@ router.get("/myTrades", async (req, res) => {
 router.get("/test", async (req, res) => {
   try {
     const client = Binance();
-    const time = await client.time();
+    const agent = getProxyAgent();
+    const config = {};
+    if (agent) {
+      config.httpAgent = agent;
+      config.httpsAgent = agent;
+    }
+    const proxiedClient = agent ? Binance(config) : client;
+    const time = await proxiedClient.time();
 
     res.json({
       success: true,
