@@ -10,7 +10,6 @@ if (hasKey) {
   console.warn('[AI] ⚠️ NVIDIA_API_KEY is NOT set in environment.');
 }
 
-// ─── Initialize client only if key exists ────────────────────────
 let nvidiaClient = null;
 if (hasKey) {
   nvidiaClient = new OpenAI({
@@ -21,7 +20,6 @@ if (hasKey) {
 
 const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
-// ─── Query functions (uses global fetch) ──────────────────────────
 async function queryNvidiaModel(model, prompt) {
   if (!nvidiaClient) {
     return { model, success: false, error: 'No API key configured' };
@@ -97,10 +95,27 @@ async function getAIAnalysis(email, market, price, closes) {
       const symbol = (market || 'BTCUSDT').replace('/', '');
       const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=50`;
       console.log(`[AI] Fetching klines from ${url}`);
-      const response = await fetch(url); // global fetch
+      const response = await fetch(url);
       const data = await response.json();
+      
+      // ─── Handle Binance error response ──────────────────────────
+      if (!Array.isArray(data)) {
+        console.error('[AI] Binance API error:', data);
+        return { 
+          signal: 'HOLD', 
+          confidence: 0, 
+          reason: `Binance error: ${data.msg || 'unknown'}` 
+        };
+      }
+      
+      if (data.length === 0) {
+        console.error('[AI] Binance returned empty array');
+        return { signal: 'HOLD', confidence: 0, reason: 'No price data from Binance' };
+      }
+      
       closesData = data.map(c => parseFloat(c[4]));
     }
+    
     const ind = getIndicators(closesData);
     if (!ind) {
       console.log('[AI] Not enough indicators');
