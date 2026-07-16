@@ -2,14 +2,31 @@ const router = require('express').Router();
 const OpenAI = require('openai');
 const fetch = require('node-fetch');
 
-const nvidiaClient = new OpenAI({
-  baseURL: 'https://integrate.api.nvidia.com/v1',
-  apiKey: process.env.NVIDIA_API_KEY,
-});
+// ─── Check if key is set ──────────────────────────────────────────
+const hasKey = !!process.env.NVIDIA_API_KEY;
+console.log(`[AI] NVIDIA_API_KEY present: ${hasKey}`);
+if (hasKey) {
+  console.log(`[AI] Key starts with: ${process.env.NVIDIA_API_KEY.slice(0,4)}...`);
+} else {
+  console.warn('[AI] ⚠️ NVIDIA_API_KEY is NOT set in environment.');
+}
+
+// ─── Initialize client only if key exists ────────────────────────
+let nvidiaClient = null;
+if (hasKey) {
+  nvidiaClient = new OpenAI({
+    baseURL: 'https://integrate.api.nvidia.com/v1',
+    apiKey: process.env.NVIDIA_API_KEY,
+  });
+}
 
 const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
+// ─── Query functions (unchanged) ──────────────────────────────────
 async function queryNvidiaModel(model, prompt) {
+  if (!nvidiaClient) {
+    return { model, success: false, error: 'No API key configured' };
+  }
   try {
     console.log(`[AI] Querying ${model}...`);
     const completion = await nvidiaClient.chat.completions.create({
@@ -71,6 +88,10 @@ function getIndicators(closes) {
 
 async function getAIAnalysis(email, market, price, closes) {
   console.log(`[AI] getAIAnalysis called: market=${market}, price=${price}`);
+  if (!nvidiaClient) {
+    return { signal: 'HOLD', confidence: 0, reason: 'NVIDIA_API_KEY missing in environment' };
+  }
+
   try {
     let closesData = closes;
     if (!closesData || closesData.length < 14) {
@@ -130,12 +151,23 @@ Never return HOLD unless there is genuinely no trading edge.`;
   }
 }
 
+// ─── Endpoint: analyze (POST) ─────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const { email, market, price, closes } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
   console.log(`[AI] /analyze request: email=${email}, market=${market}, price=${price}`);
   const result = await getAIAnalysis(email, market, price, closes);
   res.json(result);
+});
+
+// ─── Endpoint: status (GET) – safe debug ──────────────────────────
+router.get('/status', (req, res) => {
+  const key = process.env.NVIDIA_API_KEY;
+  res.json({
+    keySet: !!key,
+    keyPrefix: key ? key.slice(0,6) + '...' : null,
+    models: MODELS,
+  });
 });
 
 module.exports = { router, getAIAnalysis };
