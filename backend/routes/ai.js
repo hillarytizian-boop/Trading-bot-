@@ -1,3 +1,6 @@
+// ─── WebSocket polyfill for OpenAI ──────────────────────────────
+global.WebSocket = require('ws');
+
 const router = require('express').Router();
 const OpenAI = require('openai');
 const { instance } = require('../binanceData');
@@ -44,13 +47,11 @@ async function queryNvidiaModel(model, prompt) {
   }
 }
 
-// ─── Main analysis endpoint ────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
-  const { email, symbol = 'BTCUSDT' } = req.body;
+  const { email, symbol = req.body.market || 'BTCUSDT' } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   try {
-    // ─── Fetch data from Binance ──────────────────────────────────
     const data = await instance.getAnalysisData(symbol);
     if (!data || !data.closes || data.closes.length < 14) {
       return res.json({ signal: 'HOLD', confidence: 0, reason: 'Insufficient data from Binance' });
@@ -63,7 +64,6 @@ router.post('/analyze', async (req, res) => {
 
     const currentPrice = data.price || ind.currentPrice;
 
-    // ─── Build AI prompt ────────────────────────────────────────────
     const prompt = `You are a professional cryptocurrency trader.
 
 Analyze the following market data for ${symbol}:
@@ -87,7 +87,6 @@ Respond ONLY as JSON:
 
 Never return HOLD unless there is genuinely no trading edge.`;
 
-    // ─── Query NVIDIA models ────────────────────────────────────────
     const results = await Promise.allSettled(MODELS.map(model => queryNvidiaModel(model, prompt)));
     const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).map(r => r.value.data);
 
@@ -118,7 +117,7 @@ Never return HOLD unless there is genuinely no trading edge.`;
       });
     }
 
-    // ─── Fallback: rule-based scoring ──────────────────────────────
+    // ─── Fallback (only if NVIDIA fails) ──────────────────────────
     let score = 0;
     let reasons = [];
     const { rsi, macd, ema20, ema50 } = ind;
@@ -157,7 +156,6 @@ Never return HOLD unless there is genuinely no trading edge.`;
   }
 });
 
-// ─── Endpoint to fetch data from Binance ──────────────────────────
 router.get('/market-data', async (req, res) => {
   const { symbol = 'BTCUSDT' } = req.query;
   try {
