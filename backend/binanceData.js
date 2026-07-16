@@ -1,43 +1,106 @@
-const Binance = require('binance-api-node').default;
+const fetch = require('node-fetch');
 
-class BinanceDataFetcher {
+class DataFetcher {
   constructor() {
-    // Use api1.binance.com to avoid regional blocks
-    this.client = Binance({
-      baseUrl: 'https://api1.binance.com'
-    });
     this.symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'];
     this.priceCache = {};
     this.historyCache = {};
-    this.lastUpdate = {};
+    // CoinGecko symbol mapping
+    this.coingeckoIds = {
+      'BTCUSDT': 'bitcoin',
+      'ETHUSDT': 'ethereum',
+      'BNBUSDT': 'binancecoin',
+      'SOLUSDT': 'solana'
+    };
+  }
+
+  // ─── Binance endpoints (try these first) ──────────────────────────
+  async _binanceFetch(url) {
+    const endpoints = [
+      'https://api.binance.com',
+      'https://api1.binance.com',
+      'https://api2.binance.com',
+      'https://api3.binance.com',
+    ];
+    for (const base of endpoints) {
+      try {
+        const res = await fetch(base + url, { timeout: 5000 });
+        if (res.ok) {
+          const data = await res.json();
+          return data;
+        }
+      } catch (e) {
+        // ignore and try next
+      }
+    }
+    throw new Error('All Binance endpoints failed');
+  }
+
+  // ─── CoinGecko fallback ──────────────────────────────────────────
+  async _coingeckoFetch(symbol) {
+    const id = this.coingeckoIds[symbol];
+    if (!id) throw new Error(`No CoinGecko ID for ${symbol}`);
+    // Get current price
+    const priceUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
+    const priceRes = await fetch(priceUrl);
+    const priceData = await priceRes.json();
+    const price = priceData[id]?.usd;
+    if (!price) throw new Error('Price not found');
+
+    // Get historical data (5-min candles, last 50)
+    const now = Math.floor(Date.now() / 1000);
+    const from = now - 50 * 300; // 50 candles * 5 minutes
+    const histUrl = `https://api.coingecko.com/api/v3/coins/${id}/market_chart/range?vs_currency=usd&from=${from}&to=${now}`;
+    const histRes = await fetch(histUrl);
+    const histData = await histRes.json();
+    if (!histData.prices || histData.prices.length === 0) throw new Error('No historical data');
+    // CoinGecko returns [timestamp, price] arrays – we need closes (use the price)
+    const closes = histData.prices.map(p => p[1]);
+    // Trim to last 50
+    const trimmed = closes.slice(-50);
+    return { price, closes: trimmed };
   }
 
   async getPrice(symbol = 'BTCUSDT') {
     try {
-      const ticker = await this.client.prices({ symbol });
-      const price = parseFloat(ticker[symbol]);
+      // Try Binance first
+      const data = await this._binanceFetch(`/api/v3/ticker/price?symbol=${symbol}`);
+      const price = parseFloat(data.price);
       this.priceCache[symbol] = price;
-      this.lastUpdate[symbol] = Date.now();
       return price;
-    } catch (error) {
-      console.error(`[Binance] Price fetch error for ${symbol}:`, error.message);
-      return this.priceCache[symbol] || null;
+    } catch (e) {
+      console.warn(`[Data] Binance price failed for ${symbol}, using CoinGecko`);
+      try {
+        const { price } = await this._coingeckoFetch(symbol);
+        this.priceCache[symbol] = price;
+        return price;
+      } catch (err) {
+        console.error(`[Data] CoinGecko price failed for ${symbol}:`, err.message);
+        return this.priceCache[symbol] || null;
+      }
     }
   }
 
-  async getCandles(symbol = 'BTCUSDT', interval = '1m', limit = 50) {
+  async getCandles(symbol = 'BTCUSDT', interval = '5m', limit = 50) {
     try {
-      const candles = await this.client.candles({ symbol, interval, limit });
-      const closes = candles.map(c => parseFloat(c.close));
-      const volumes = candles.map(c => parseFloat(c.volume));
-      const highs = candles.map(c => parseFloat(c.high));
-      const lows = candles.map(c => parseFloat(c.low));
-      const timestamps = candles.map(c => c.openTime);
-      this.historyCache[symbol] = { closes, volumes, highs, lows, timestamps };
-      return this.historyCache[symbol];
-    } catch (error) {
-      console.error(`[Binance] Candles fetch error for ${symbol}:`, error.message);
-      return this.historyCache[symbol] || null;
+      // Try Binance for candles (uses 1m, but if it fails we fallback)
+      const data = await this._binanceFetch(`/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
+      if (Array.isArray(data) && data.length > 0) {
+        const closes = data.map(c => parseFloat(c[4]));
+        this.historyCache[symbol] = { closes };
+        return this.historyCache[symbol];
+      }
+      throw new Error('Binance candles invalid');
+    } catch (e) {
+      console.warn(`[Data] Binance candles failed for ${symbol}, using CoinGecko (5-min)`);
+      try {
+        const { closes } = await this._coingeckoFetch(symbol);
+        this.historyCache[symbol] = { closes };
+        return this.historyCache[symbol];
+      } catch (err) {
+        console.error(`[Data] CoinGecko candles failed for ${symbol}:`, err.message);
+        return this.historyCache[symbol] || null;
+      }
     }
   }
 
@@ -48,13 +111,10 @@ class BinanceDataFetcher {
       symbol,
       price,
       closes: history?.closes || [],
-      volumes: history?.volumes || [],
-      highs: history?.highs || [],
-      lows: history?.lows || [],
-      timestamps: history?.timestamps || [],
     };
   }
 
+  // ─── Indicator calculations (unchanged) ──────────────────────────
   calculateIndicators(closes) {
     if (!closes || closes.length < 14) return null;
     let gains = 0, losses = 0;
@@ -88,7 +148,6 @@ class BinanceDataFetcher {
     const bbLower = sma - 2 * std;
     const typical = closes.map((c, i) => (c + (closes[i] || c) + (closes[i] || c)) / 3);
     const vwap = typical.reduce((a,b) => a+b, 0) / typical.length;
-    let adx = 25;
     return {
       rsi,
       macd,
@@ -98,7 +157,7 @@ class BinanceDataFetcher {
       bbUpper,
       bbLower,
       vwap,
-      adx,
+      adx: 25,
       currentPrice: closes[closes.length-1],
     };
   }
@@ -125,7 +184,7 @@ class BinanceDataFetcher {
   }
 }
 
-const instance = new BinanceDataFetcher();
+const instance = new DataFetcher();
 
 async function updateAllPrices() {
   for (const symbol of instance.symbols) {
@@ -133,7 +192,7 @@ async function updateAllPrices() {
       await instance.getPrice(symbol);
       await instance.getCandles(symbol);
     } catch (e) {
-      console.error(`[Binance] Update error for ${symbol}:`, e.message);
+      // ignore
     }
   }
 }
@@ -143,4 +202,4 @@ if (process.env.NODE_ENV !== 'test') {
   setTimeout(updateAllPrices, 1000);
 }
 
-module.exports = { BinanceDataFetcher, instance, updateAllPrices };
+module.exports = { DataFetcher, instance, updateAllPrices };
