@@ -174,6 +174,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   const [analyzing, setAnalyzing] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
   const scrollRef = useRef(null);
+  const engineSignalInterval = useRef(null);
   const autoAnalyzeInterval = useRef(null);
   const wsRef = useRef(null);
   const lastUpdate = useRef(0);
@@ -184,6 +185,30 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
     wsRef.current = new WebSocket(wsUrl);
     wsRef.current.onmessage = (e) => {
+    // Poll engine signal every 5 seconds
+    if (!engineSignalInterval.current) {
+      engineSignalInterval.current = setInterval(() => {
+        fetch("/api/signal/latest")
+          .then(r => r.json())
+          .then(data => {
+            if (data.signal && data.signal !== "HOLD") {
+              setCurrentSignal(data);
+              setMessages(prev => {
+                const newMsg = {
+                  type: "bot",
+                  time: new Date().toLocaleTimeString(),
+                  text: `🤖 ${data.signal} (${data.confidence}%) - $${price?.toFixed(2)}`,
+                  signal: { signal: data.signal, confidence: data.confidence, risk: "LOW" },
+                  reason: data.reason,
+                };
+                const updated = [...prev, newMsg];
+                return updated.slice(-20);
+              });
+            }
+          })
+          .catch(() => {});
+      }, 5000);
+    }
     // Start auto-analysis every 5 seconds
     if (!autoAnalyzeInterval.current) {
       autoAnalyzeInterval.current = setInterval(() => {

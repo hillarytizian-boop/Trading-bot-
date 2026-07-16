@@ -36,6 +36,7 @@ app.use('/api/agent', safeRequire('./routes/agent'));
 app.use("/api/trade", safeRequire("./routes/trade"));
 app.use('/api/backtest', safeRequire('./routes/backtest'));
 app.use('/api/user', safeRequire('./routes/user'));
+app.use("/api/signal", safeRequire("./routes/signal"));
 console.log('✅ Routes mounted');
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
