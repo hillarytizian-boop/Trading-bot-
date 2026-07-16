@@ -10,6 +10,46 @@ const agent = new HttpsProxyAgent(PROXY_URL);
 
 const agentStates = new Map();
 
+// ─── Ensure signals table exists ────────────────────────────────────
+async function ensureSignalsTable() {
+  try {
+    // Check if table exists by trying to select
+    await supabase.from('signals').select('id').limit(1);
+  } catch (e) {
+    // Create table if not exists
+    await supabase.rpc('exec_sql', {
+      sql: `
+        CREATE TABLE IF NOT EXISTS signals (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_email TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          signal TEXT NOT NULL,
+          confidence INTEGER NOT NULL,
+          reason TEXT,
+          trend TEXT,
+          market_regime TEXT,
+          entry_price FLOAT,
+          stop_loss FLOAT,
+          take_profit FLOAT,
+          risk_reward TEXT,
+          expected_move_percent FLOAT,
+          trade_duration TEXT,
+          pros JSONB,
+          cons JSONB,
+          indicator_scores JSONB,
+          data JSONB,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_signals_user_email ON signals(user_email);
+        CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at);
+      `
+    });
+  }
+}
+// Run at startup
+ensureSignalsTable();
+
+// ─── Load/Save state ────────────────────────────────────────────────
 async function loadState(email) {
   const { data, error } = await supabase
     .from('users')
@@ -36,6 +76,36 @@ async function saveState(email, state) {
   await supabase.from('users').update({ agent_state: state }).eq('email', email);
 }
 
+// ─── Store signal in database ───────────────────────────────────────
+async function storeSignal(email, symbol, aiResult, price) {
+  try {
+    // Ensure all fields are present
+    const signal = {
+      user_email: email,
+      symbol: symbol,
+      signal: aiResult.signal || 'HOLD',
+      confidence: aiResult.confidence || 0,
+      reason: aiResult.reason || '',
+      trend: aiResult.trend || null,
+      market_regime: aiResult.market_regime || null,
+      entry_price: aiResult.entry_price || price || null,
+      stop_loss: aiResult.stop_loss || null,
+      take_profit: aiResult.take_profit || null,
+      risk_reward: aiResult.risk_reward || null,
+      expected_move_percent: aiResult.expected_move_percent || null,
+      trade_duration: aiResult.trade_duration || null,
+      pros: aiResult.pros || null,
+      cons: aiResult.cons || null,
+      indicator_scores: aiResult.indicator_scores || null,
+      data: aiResult.data || null,
+    };
+    await supabase.from('signals').insert([signal]);
+  } catch (e) {
+    console.error('[Agent] Failed to store signal:', e.message);
+  }
+}
+
+// ─── Get price ──────────────────────────────────────────────────────
 async function getPrice(symbol) {
   try {
     const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol.replace('/', '')}`;
@@ -48,6 +118,7 @@ async function getPrice(symbol) {
   }
 }
 
+// ─── Main agent loop ────────────────────────────────────────────────
 async function agentLoop(email) {
   const state = await loadState(email);
   if (!state.running) return;
@@ -68,6 +139,15 @@ async function agentLoop(email) {
     state.priceHistory.push(price);
     if (state.priceHistory.length > 100) state.priceHistory.shift();
 
+    // ─── Get AI analysis (this uses the new prompt) ──────────────
+    // We need to import getAIAnalysis – it's exported from ai.js
+    const { getAIAnalysis } = require('./ai.js');
+    const aiResult = await getAIAnalysis(email, symbol, price, state.priceHistory);
+
+    // ─── Store the signal (always) ────────────────────────────────
+    await storeSignal(email, symbol, aiResult, price);
+
+    // ─── Check open trade ──────────────────────────────────────────
     if (state.activeTradeId) {
       const { data: trade } = await supabase
         .from('trades')
@@ -102,6 +182,7 @@ async function agentLoop(email) {
           state.activeTradeId = null;
           await saveState(email, state);
         }
+        // Even if trade is open, we already stored the signal – just return
         return;
       } else {
         state.activeTradeId = null;
@@ -109,65 +190,62 @@ async function agentLoop(email) {
       }
     }
 
-    // Get AI signal
-    const ai = await getAIAnalysis(email, symbol, price, state.priceHistory);
-    if (ai.signal === 'HOLD' || ai.confidence < 60) {
-      await saveState(email, state);
-      return;
+    // ─── If AI signal is strong and we have no trade, execute ──────
+    if (aiResult.signal !== 'HOLD' && aiResult.confidence >= 75) {
+      let balance;
+      if (isPaper) {
+        balance = state.paperBalance;
+      } else {
+        if (!settings.binance_api_key) { await saveState(email, state); return; }
+        const client = Binance({
+          apiKey: settings.binance_api_key,
+          secretKey: settings.binance_secret_key,
+          httpsAgent: agent,
+        });
+        const account = await client.accountInfo();
+        const usdt = account.balances.find(b => b.asset === 'USDT');
+        balance = usdt ? parseFloat(usdt.free) : 0;
+      }
+
+      if (balance >= 1) {
+        let tradeAmount = Math.min(balance * 0.01, 0.50);
+        const quantity = tradeAmount / price;
+
+        const slPercent = 2, tpPercent = 5;
+        let stopLoss, takeProfit;
+        if (aiResult.signal === 'BUY') {
+          stopLoss = price * (1 - slPercent/100);
+          takeProfit = price * (1 + tpPercent/100);
+        } else {
+          stopLoss = price * (1 + slPercent/100);
+          takeProfit = price * (1 - tpPercent/100);
+        }
+
+        const tradeId = uuidv4();
+        await supabase.from('trades').insert([{
+          id: tradeId,
+          user_email: email,
+          symbol: symbol,
+          type: aiResult.signal,
+          entry_price: price,
+          quantity: quantity,
+          stop_loss: stopLoss,
+          take_profit: takeProfit,
+          status: 'open',
+          opened_at: new Date().toISOString(),
+          signal_confidence: aiResult.confidence,
+          signal_reason: aiResult.reason,
+          is_paper: isPaper,
+        }]);
+
+        state.activeTradeId = tradeId;
+        state.tradesToday++;
+        await saveState(email, state);
+        console.log(`📈 AGENT: ${aiResult.signal} ${symbol} at ${price}, amount $${tradeAmount.toFixed(2)}`);
+      }
     }
 
-    let balance;
-    if (isPaper) {
-      balance = state.paperBalance;
-    } else {
-      if (!settings.binance_api_key) { await saveState(email, state); return; }
-      const client = Binance({
-        apiKey: settings.binance_api_key,
-        secretKey: settings.binance_secret_key,
-        httpsAgent: agent,
-      });
-      const account = await client.accountInfo();
-      const usdt = account.balances.find(b => b.asset === 'USDT');
-      balance = usdt ? parseFloat(usdt.free) : 0;
-    }
-
-    if (balance < 1) { await saveState(email, state); return; }
-
-    let tradeAmount = Math.min(balance * 0.01, 0.50);
-    const quantity = tradeAmount / price;
-
-    const slPercent = 2, tpPercent = 5;
-    let stopLoss, takeProfit;
-    if (ai.signal === 'BUY') {
-      stopLoss = price * (1 - slPercent/100);
-      takeProfit = price * (1 + tpPercent/100);
-    } else {
-      stopLoss = price * (1 + slPercent/100);
-      takeProfit = price * (1 - tpPercent/100);
-    }
-
-    const tradeId = uuidv4();
-    await supabase.from('trades').insert([{
-      id: tradeId,
-      user_email: email,
-      symbol: symbol,
-      type: ai.signal,
-      entry_price: price,
-      quantity: quantity,
-      stop_loss: stopLoss,
-      take_profit: takeProfit,
-      status: 'open',
-      opened_at: new Date().toISOString(),
-      signal_confidence: ai.confidence,
-      signal_reason: ai.reason,
-      is_paper: isPaper,
-    }]);
-
-    state.activeTradeId = tradeId;
-    state.tradesToday++;
     await saveState(email, state);
-    console.log(`📈 AGENT: ${ai.signal} ${symbol} at ${price}, amount $${tradeAmount.toFixed(2)}`);
-
   } catch (error) {
     console.error('Agent loop error:', error.message);
   } finally {
@@ -178,6 +256,7 @@ async function agentLoop(email) {
   }
 }
 
+// ─── Endpoints ──────────────────────────────────────────────────────
 router.post('/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
@@ -209,6 +288,29 @@ router.get('/status', async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email required' });
   const state = await loadState(email);
   res.json(state);
+});
+
+// ─── New endpoint: get latest signal ──────────────────────────────
+router.get('/latest-signal', async (req, res) => {
+  const { email, symbol } = req.query;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    const query = supabase
+      .from('signals')
+      .select('*')
+      .eq('user_email', email);
+    if (symbol) {
+      const cleanSymbol = symbol.replace(/\//g, '');
+      query.eq('symbol', cleanSymbol);
+    }
+    const { data, error } = await query
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    res.json(data?.[0] || null);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;
