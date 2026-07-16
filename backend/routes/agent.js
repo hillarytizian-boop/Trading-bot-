@@ -5,7 +5,6 @@ const { v4: uuidv4 } = require('uuid');
 const Binance = require('binance-api-node').default;
 const HttpsProxyAgent = require('https-proxy-agent');
 
-// ─── Proxy configuration ────────────────────────────────────────────
 const PROXY_URL = 'http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129';
 const agent = new HttpsProxyAgent(PROXY_URL);
 
@@ -125,7 +124,7 @@ async function agentLoop(email) {
       const client = Binance({
         apiKey: settings.binance_api_key,
         secretKey: settings.binance_secret_key,
-        httpsAgent: agent, // use proxy
+        httpsAgent: agent,
       });
       const account = await client.accountInfo();
       const usdt = account.balances.find(b => b.asset === 'USDT');
@@ -191,9 +190,6 @@ router.post('/start', async (req, res) => {
   state.consecutiveWins = 0;
   state.consecutiveLosses = 0;
   state.activeTradeId = null;
-  const user = await supabase.from('users').select('bot_settings').eq('email', email).single();
-  const symbol = user.data?.bot_settings?.market || 'BTCUSDT';
-  // pre-fetch some price history (optional)
   await saveState(email, state);
   setTimeout(() => agentLoop(email), 1000);
   res.json({ status: 'started' });

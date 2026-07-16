@@ -1,7 +1,6 @@
 const fetch = require('node-fetch');
 const HttpsProxyAgent = require('https-proxy-agent');
 
-// ─── Proxy configuration ────────────────────────────────────────────
 const PROXY_URL = 'http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129';
 const agent = new HttpsProxyAgent(PROXY_URL);
 
@@ -18,12 +17,8 @@ class DataFetcher {
     };
   }
 
-  // ─── Use proxy for Binance requests ──────────────────────────────
   async _binanceFetch(url) {
-    const endpoints = [
-      'https://api.binance.com',
-      'https://api1.binance.com'
-    ];
+    const endpoints = ['https://api.binance.com', 'https://api1.binance.com'];
     for (const base of endpoints) {
       try {
         const res = await fetch(base + url, { agent, timeout: 5000 });
@@ -35,10 +30,9 @@ class DataFetcher {
     throw new Error('All Binance endpoints failed via proxy');
   }
 
-  // ─── CoinGecko fallback (direct, no proxy needed) ─────────────────
   async _coingeckoFetch(symbol) {
     const id = this.coingeckoIds[symbol];
-    if (!id) throw new Error(`No CoinGecko ID for ${symbol}`);
+    if (!id) throw new Error(`Unknown symbol: ${symbol}`);
     const priceUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
     const priceRes = await fetch(priceUrl);
     const priceData = await priceRes.json();
@@ -68,7 +62,7 @@ class DataFetcher {
     }
   }
 
-  async getCandles(symbol = 'BTCUSDT', interval = '1m', limit = 50) {
+  async getCandles(symbol = 'BTCUSDT', limit = 50) {
     try {
       const data = await this._binanceFetch(`/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
       if (Array.isArray(data) && data.length > 0) {
@@ -95,7 +89,6 @@ class DataFetcher {
     };
   }
 
-  // ─── Indicators (unchanged) ──────────────────────────────────────
   calculateIndicators(closes) {
     if (!closes || closes.length < 14) return null;
     let gains = 0, losses = 0;
@@ -130,57 +123,21 @@ class DataFetcher {
     const typical = closes.map((c, i) => (c + (closes[i] || c) + (closes[i] || c)) / 3);
     const vwap = typical.reduce((a,b) => a+b, 0) / typical.length;
     return {
-      rsi,
-      macd,
-      ema20,
-      ema50,
-      atr,
-      bbUpper,
-      bbLower,
-      vwap,
+      rsi, macd, ema20, ema50, atr, bbUpper, bbLower, vwap,
       adx: 25,
       currentPrice: closes[closes.length-1],
-    };
-  }
-
-  formatForAI(data) {
-    const ind = this.calculateIndicators(data.closes);
-    if (!ind) return null;
-    return {
-      symbol: data.symbol,
-      price: data.price || ind.currentPrice,
-      indicators: {
-        rsi: ind.rsi,
-        macd: ind.macd,
-        ema20: ind.ema20,
-        ema50: ind.ema50,
-        atr: ind.atr,
-        bbUpper: ind.bbUpper,
-        bbLower: ind.bbLower,
-        vwap: ind.vwap,
-        adx: ind.adx,
-      },
-      closes: data.closes,
     };
   }
 }
 
 const instance = new DataFetcher();
-
 async function updateAllPrices() {
   for (const symbol of instance.symbols) {
-    try {
-      await instance.getPrice(symbol);
-      await instance.getCandles(symbol);
-    } catch (e) {
-      // ignore
-    }
+    try { await instance.getPrice(symbol); await instance.getCandles(symbol); } catch (e) {}
   }
 }
-
 if (process.env.NODE_ENV !== 'test') {
   setInterval(updateAllPrices, 60000);
   setTimeout(updateAllPrices, 1000);
 }
-
 module.exports = { DataFetcher, instance, updateAllPrices };
