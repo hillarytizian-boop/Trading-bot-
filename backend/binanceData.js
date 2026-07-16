@@ -1,11 +1,15 @@
 const fetch = require('node-fetch');
+const HttpsProxyAgent = require('https-proxy-agent');
+
+// Your proxy
+const PROXY = 'http://95.140.154.211:8080';
+const agent = new HttpsProxyAgent(PROXY);
 
 class DataFetcher {
   constructor() {
     this.symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT'];
     this.priceCache = {};
     this.historyCache = {};
-    // CoinGecko symbol mapping
     this.coingeckoIds = {
       'BTCUSDT': 'bitcoin',
       'ETHUSDT': 'ethereum',
@@ -14,93 +18,74 @@ class DataFetcher {
     };
   }
 
-  // ─── Binance endpoints (try these first) ──────────────────────────
+  // ─── Binance via proxy ────────────────────────────────────────────
   async _binanceFetch(url) {
     const endpoints = [
       'https://api.binance.com',
       'https://api1.binance.com',
       'https://api2.binance.com',
-      'https://api3.binance.com',
+      'https://api3.binance.com'
     ];
     for (const base of endpoints) {
       try {
-        const res = await fetch(base + url, { timeout: 5000 });
+        const res = await fetch(base + url, { agent, timeout: 5000 });
         if (res.ok) {
-          const data = await res.json();
-          return data;
+          return await res.json();
         }
       } catch (e) {
-        // ignore and try next
+        console.warn(`[Binance] ${base} failed via proxy:`, e.message);
       }
     }
-    throw new Error('All Binance endpoints failed');
+    throw new Error('All Binance endpoints failed via proxy');
   }
 
-  // ─── CoinGecko fallback ──────────────────────────────────────────
+  // ─── CoinGecko (direct, no proxy needed) ─────────────────────────
   async _coingeckoFetch(symbol) {
     const id = this.coingeckoIds[symbol];
     if (!id) throw new Error(`No CoinGecko ID for ${symbol}`);
-    // Get current price
     const priceUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
     const priceRes = await fetch(priceUrl);
     const priceData = await priceRes.json();
     const price = priceData[id]?.usd;
     if (!price) throw new Error('Price not found');
-
-    // Get historical data (5-min candles, last 50)
     const now = Math.floor(Date.now() / 1000);
-    const from = now - 50 * 300; // 50 candles * 5 minutes
+    const from = now - 50 * 300;
     const histUrl = `https://api.coingecko.com/api/v3/coins/${id}/market_chart/range?vs_currency=usd&from=${from}&to=${now}`;
     const histRes = await fetch(histUrl);
     const histData = await histRes.json();
-    if (!histData.prices || histData.prices.length === 0) throw new Error('No historical data');
-    // CoinGecko returns [timestamp, price] arrays – we need closes (use the price)
-    const closes = histData.prices.map(p => p[1]);
-    // Trim to last 50
-    const trimmed = closes.slice(-50);
-    return { price, closes: trimmed };
+    if (!histData.prices) throw new Error('No historical data');
+    const closes = histData.prices.map(p => p[1]).slice(-50);
+    return { price, closes };
   }
 
   async getPrice(symbol = 'BTCUSDT') {
     try {
-      // Try Binance first
       const data = await this._binanceFetch(`/api/v3/ticker/price?symbol=${symbol}`);
       const price = parseFloat(data.price);
       this.priceCache[symbol] = price;
       return price;
     } catch (e) {
-      console.warn(`[Data] Binance price failed for ${symbol}, using CoinGecko`);
-      try {
-        const { price } = await this._coingeckoFetch(symbol);
-        this.priceCache[symbol] = price;
-        return price;
-      } catch (err) {
-        console.error(`[Data] CoinGecko price failed for ${symbol}:`, err.message);
-        return this.priceCache[symbol] || null;
-      }
+      console.warn(`[Data] Binance price via proxy failed, using CoinGecko`);
+      const { price } = await this._coingeckoFetch(symbol);
+      this.priceCache[symbol] = price;
+      return price;
     }
   }
 
-  async getCandles(symbol = 'BTCUSDT', interval = '5m', limit = 50) {
+  async getCandles(symbol = 'BTCUSDT', interval = '1m', limit = 50) {
     try {
-      // Try Binance for candles (uses 1m, but if it fails we fallback)
       const data = await this._binanceFetch(`/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
       if (Array.isArray(data) && data.length > 0) {
         const closes = data.map(c => parseFloat(c[4]));
         this.historyCache[symbol] = { closes };
         return this.historyCache[symbol];
       }
-      throw new Error('Binance candles invalid');
+      throw new Error('Invalid Binance candles');
     } catch (e) {
-      console.warn(`[Data] Binance candles failed for ${symbol}, using CoinGecko (5-min)`);
-      try {
-        const { closes } = await this._coingeckoFetch(symbol);
-        this.historyCache[symbol] = { closes };
-        return this.historyCache[symbol];
-      } catch (err) {
-        console.error(`[Data] CoinGecko candles failed for ${symbol}:`, err.message);
-        return this.historyCache[symbol] || null;
-      }
+      console.warn(`[Data] Binance candles via proxy failed, using CoinGecko (5-min)`);
+      const { closes } = await this._coingeckoFetch(symbol);
+      this.historyCache[symbol] = { closes };
+      return this.historyCache[symbol];
     }
   }
 
