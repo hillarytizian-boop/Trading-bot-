@@ -47,7 +47,11 @@ async function queryNvidiaModel(model, prompt) {
 }
 
 router.post('/analyze', async (req, res) => {
-  const { email, symbol: rawSymbol = req.body.market || .BTCUSDT. } = req.body; const symbol = rawSymbol.replace(//, .);
+  // Accept both 'symbol' and 'market', and remove any slashes
+  const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
+  const symbol = rawSymbol.replace(/\//g, '');
+  const { email } = req.body;
+
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   try {
@@ -157,7 +161,8 @@ Never return HOLD unless there is genuinely no trading edge.`;
 });
 
 router.get('/market-data', async (req, res) => {
-  const { symbol = 'BTCUSDT' } = req.query;
+  let { symbol = 'BTCUSDT' } = req.query;
+  symbol = symbol.replace(/\//g, '');
   try {
     const data = await instance.getAnalysisData(symbol);
     res.json(data);
