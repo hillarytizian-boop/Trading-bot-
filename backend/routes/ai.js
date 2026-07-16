@@ -170,4 +170,5 @@ router.get('/status', (req, res) => {
   });
 });
 
+console.log('[AI] ✅ Routes registered: POST /analyze, GET /status');
 module.exports = { router, getAIAnalysis };
