@@ -1,16 +1,12 @@
 const router = require('express').Router();
 const OpenAI = require('openai');
 
-// ─── NVIDIA API client ──────────────────────────────────────────
 const nvidiaClient = new OpenAI({
   baseURL: 'https://integrate.api.nvidia.com/v1',
   apiKey: process.env.NVIDIA_API_KEY,
 });
 
-const MODELS = [
-  'deepseek-ai/deepseek-v4-pro',
-  'z-ai/glm-5.2',
-];
+const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
 async function queryNvidiaModel(model, prompt) {
   try {
@@ -55,66 +51,26 @@ router.post('/analyze', async (req, res) => {
   const macd = indicators?.macd ?? 0;
   const ema = indicators?.ema ?? price;
 
-  const prompt = `You are a professional crypto trading analyst.
-
-Current BTC/USDT price: $${price}
-RSI: ${rsi}
-EMA: ${ema}
-MACD: ${macd}
-
-Provide a trading signal (BUY, SELL, or HOLD) with:
-- confidence (0-100)
-- brief reason (max 30 words)
-
-Respond ONLY with valid JSON:
-{"signal":"BUY","confidence":85,"reason":"RSI oversold"}`;
+  const prompt = `Current BTC/USDT price: $${price}, RSI: ${rsi}, EMA: ${ema}, MACD: ${macd}. Provide signal (BUY/SELL/HOLD) with confidence and reason. JSON only.`;
 
   try {
-    console.log('[AI] NVIDIA AI analysing...');
-    const results = await Promise.allSettled(
-      MODELS.map(model => queryNvidiaModel(model, prompt))
-    );
-    const successful = results
-      .filter(r => r.status === 'fulfilled' && r.value.success)
-      .map(r => r.value.data);
-
+    const results = await Promise.allSettled(MODELS.map(m => queryNvidiaModel(m, prompt)));
+    const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).map(r => r.value.data);
     if (successful.length === 0) {
-      return res.json({ signal: 'HOLD', confidence: 30, reason: 'NVIDIA unavailable' });
+      return res.json({ signal: 'HOLD', confidence: 0, reason: 'NVIDIA unavailable' });
     }
-
     const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
     successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
     const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
     const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
-    const reasons = successful.map(d => d.reason);
-
     res.json({
       signal: finalSignal,
       confidence: avgConfidence,
-      reason: `NVIDIA AI: ${reasons.join(' ')}`,
-      breakdown: successful.map((d, i) => ({
-        model: MODELS[i] || 'unknown',
-        signal: d.signal,
-        confidence: d.confidence,
-        reason: d.reason,
-      })),
+      reason: `NVIDIA AI: ${successful.map(d => d.reason).join(' ')}`,
+      breakdown: successful.map((d, i) => ({ model: MODELS[i], signal: d.signal, confidence: d.confidence, reason: d.reason })),
     });
   } catch (error) {
-    console.error('[AI] Error:', error.message);
-    res.json({ signal: 'HOLD', confidence: 30, reason: 'AI error: ' + error.message });
-  }
-});
-
-router.get('/status', async (req, res) => {
-  try {
-    await nvidiaClient.chat.completions.create({
-      model: 'deepseek-ai/deepseek-v4-pro',
-      messages: [{ role: 'user', content: 'Hello' }],
-      max_tokens: 10,
-    });
-    res.json({ nvidia: 'connected', models: MODELS });
-  } catch (error) {
-    res.json({ nvidia: 'error', message: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 

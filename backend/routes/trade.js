@@ -10,7 +10,6 @@ const nvidiaClient = new OpenAI({
 
 const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
-// ─── Helper: query NVIDIA model ──────────────────────────────────
 async function queryNvidiaModel(model, prompt) {
   try {
     const completion = await nvidiaClient.chat.completions.create({
@@ -108,8 +107,7 @@ router.post('/auto', async (req, res) => {
     const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
     const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
 
-    // ─── 3. Adaptive confidence (trend vs ranging) ───────────
-    // If multi-timeframe agrees, lower threshold
+    // ─── 3. Adaptive confidence ───────────────────────────────
     const threshold = (tfSignal === finalSignal) ? 50 : 60;
     if (finalSignal === 'HOLD' || avgConfidence < threshold) {
       return res.json({ signal: 'HOLD', confidence: avgConfidence, reason: 'Low confidence' });
@@ -129,7 +127,6 @@ router.post('/auto', async (req, res) => {
         if (price <= sl) { pnl = (price - entry) * trade.quantity; closed = true; }
         else if (price >= tp) { pnl = (price - entry) * trade.quantity; closed = true; }
         else if (price > entry * 1.02) {
-          // Trailing: move SL to breakeven after 2% gain
           await supabase.from('trades').update({ stop_loss: entry }).eq('id', trade.id);
         }
       } else {
@@ -170,7 +167,6 @@ router.post('/auto', async (req, res) => {
     // ─── 7. Position sizing (Kelly) ───────────────────────────
     const user = await supabase.from('users').select('paper_balance').eq('email', email).single();
     const balance = user.data?.paper_balance || 1000;
-    // Simple Kelly: if confidence > 80, risk 2%, else 1%
     const riskPct = avgConfidence > 80 ? 0.02 : 0.01;
     const tradeAmount = Math.min(balance * riskPct, 0.50);
     const quantity = tradeAmount / price;
