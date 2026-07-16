@@ -47,7 +47,7 @@ async function queryNvidiaModel(model, prompt) {
 }
 
 router.post('/analyze', async (req, res) => {
-  // Accept both 'symbol' and 'market', and remove any slashes
+  // Accept both 'symbol' and 'market', remove any slashes
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
   const { email } = req.body;

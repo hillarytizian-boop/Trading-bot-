@@ -49,6 +49,7 @@ class DataFetcher {
   }
 
   async getPrice(symbol = 'BTCUSDT') {
+    symbol = symbol.replace(/\//g, '');
     try {
       const data = await this._binanceFetch(`/api/v3/ticker/price?symbol=${symbol}`);
       const price = parseFloat(data.price);
@@ -63,6 +64,7 @@ class DataFetcher {
   }
 
   async getCandles(symbol = 'BTCUSDT', limit = 50) {
+    symbol = symbol.replace(/\//g, '');
     try {
       const data = await this._binanceFetch(`/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
       if (Array.isArray(data) && data.length > 0) {
@@ -79,7 +81,8 @@ class DataFetcher {
     }
   }
 
-  async getAnalysisData(symbol = .BTCUSDT.) { symbol = symbol.replace(//, .);
+  async getAnalysisData(symbol = 'BTCUSDT') {
+    symbol = symbol.replace(/\//g, '');
     const price = await this.getPrice(symbol);
     const history = await this.getCandles(symbol);
     return {
