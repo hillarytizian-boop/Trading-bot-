@@ -28,6 +28,7 @@ class TradingEngine {
     this.reconnectTimer = null;
     this.activeTradeId = null;
     this.paperBalance = 1000;
+    this.lastAnalysisTime = 0;
   }
 
   // ─── Connect to Binance WebSocket ────────────────────────────
@@ -45,10 +46,9 @@ class TradingEngine {
 
     this.ws.on('open', () => {
       console.log(`[Engine] WebSocket connected for ${this.symbol}`);
-      this.reconnectTimer = null;
     });
 
-    this.ws.on('message', (data) => {
+    this.ws.on('message', async (data) => {
       try {
         const msg = JSON.parse(data);
         if (msg.k) {
@@ -58,7 +58,7 @@ class TradingEngine {
           const low = parseFloat(candle.l);
           const volume = parseFloat(candle.v);
 
-          // Only process if candle is closed
+          // Only process closed candles
           if (!candle.x) return;
 
           this.closes.push(close);
@@ -66,7 +66,6 @@ class TradingEngine {
           this.lows.push(low);
           this.volumes.push(volume);
 
-          // Keep last 100 candles
           if (this.closes.length > 100) {
             this.closes.shift();
             this.highs.shift();
@@ -75,7 +74,7 @@ class TradingEngine {
           }
 
           this.lastPrice = close;
-          this.analyzeAndTrade();
+          await this.analyzeAndTrade();
         }
       } catch (e) {
         console.error('[Engine] Error parsing message:', e);
@@ -84,7 +83,7 @@ class TradingEngine {
 
     this.ws.on('close', () => {
       console.log('[Engine] WebSocket closed, reconnecting in 5s...');
-      this.reconnectTimer = setTimeout(() => this.connectWebSocket(), 5000);
+      setTimeout(() => this.connectWebSocket(), 5000);
     });
 
     this.ws.on('error', (err) => {
@@ -96,12 +95,12 @@ class TradingEngine {
   async analyzeAndTrade() {
     if (this.closes.length < 30) return;
 
-    // ─── Calculate indicators ──────────────────────────────────
     const closes = this.closes;
     const highs = this.highs;
     const lows = this.lows;
     const volumes = this.volumes;
 
+    // ─── Calculate indicators ──────────────────────────────────
     const rsi = technical.RSI.calculate({ values: closes, period: 14 });
     const macd = technical.MACD.calculate({
       values: closes,
@@ -132,128 +131,92 @@ class TradingEngine {
     const lastVolume = volumes[volumes.length-1] || 0;
     const avgVolume = volumes.slice(-20).reduce((a,b) => a+b, 0) / (volumes.length || 1);
 
-    // ─── Compute score (less conservative) ─────────────────────
-    let score = 0;
-    if (lastRsi < 30) score += 2;
-    else if (lastRsi > 70) score -= 2;
-    else if (lastRsi < 45) score += 1;
-    else if (lastRsi > 55) score -= 1;
+    // ─── Build AI prompt ──────────────────────────────────────────
+    const prompt = `You are a professional cryptocurrency trader.
 
-    if (lastMacd.MACD > lastMacd.signal) score += 1.5;
-    else if (lastMacd.MACD < lastMacd.signal) score -= 1.5;
+Analyze the following market data for BTC/USDT:
 
-    if (closes[closes.length-1] < lastBb.lower) score += 1.5;
-    else if (closes[closes.length-1] > lastBb.upper) score -= 1.5;
-
-    if (lastEma20 > lastEma50) score += 1;
-    else score -= 1;
-
-    // Volume confirmation
-    if (lastVolume > avgVolume * 1.5) {
-      if (score > 0) score += 0.5;
-      else score -= 0.5;
-    }
-
-    // ─── Determine preliminary signal ──────────────────────────
-    let preliminarySignal = 'HOLD';
-    if (score >= 2) preliminarySignal = 'BUY';
-    else if (score <= -2) preliminarySignal = 'SELL';
-
-    // ─── NVIDIA AI confirmation ─────────────────────────────────
-    let aiSignal = { signal: preliminarySignal, confidence: 50, reason: 'No AI' };
-    if (preliminarySignal !== 'HOLD') {
-      const prompt = `You are a professional crypto trader.
 Price: $${closes[closes.length-1]}
-RSI: ${lastRsi}
+RSI: ${lastRsi.toFixed(1)}
 MACD: ${lastMacd.MACD.toFixed(4)}
-EMA20: ${lastEma20}
-EMA50: ${lastEma50}
-ATR: ${lastAtr}
-Bollinger: upper=${lastBb.upper}, lower=${lastBb.lower}
+EMA20: ${lastEma20.toFixed(2)}
+EMA50: ${lastEma50.toFixed(2)}
+ATR: ${lastAtr.toFixed(2)}
+Bollinger Upper: ${lastBb.upper.toFixed(2)}
+Bollinger Lower: ${lastBb.lower.toFixed(2)}
+Volume: ${lastVolume.toFixed(0)} (avg: ${avgVolume.toFixed(0)})
 
-Provide a trading signal (BUY/SELL/HOLD) with confidence (0-100) and a brief reason.
-Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
+Respond ONLY as JSON:
+{
+  "signal": "BUY",
+  "confidence": 84,
+  "reason": "..."
+}
 
-      try {
-        const results = await Promise.allSettled(
-          MODELS.map(async (model) => {
-            const completion = await nvidiaClient.chat.completions.create({
-              model,
-              messages: [{ role: 'user', content: prompt }],
-              temperature: 0.7,
-              max_tokens: 200,
-              stream: false,
-            });
-            const content = completion.choices[0].message.content;
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const parsed = JSON.parse(jsonMatch[0]);
-              if (parsed.signal && parsed.confidence !== undefined) {
-                return { model, success: true, data: parsed };
-              }
+Never return HOLD unless there is genuinely no trading edge.`;
+
+    // ─── Get NVIDIA AI signal ──────────────────────────────────
+    let aiSignal = { signal: 'HOLD', confidence: 0, reason: 'AI unavailable' };
+    try {
+      const results = await Promise.allSettled(
+        MODELS.map(async (model) => {
+          const completion = await nvidiaClient.chat.completions.create({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.5,
+            max_tokens: 200,
+            stream: false,
+          });
+          const content = completion.choices[0].message.content;
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            if (parsed.signal && parsed.confidence !== undefined) {
+              return { model, success: true, data: parsed };
             }
-            return { model, success: false };
-          })
-        );
-        const successful = results
-          .filter(r => r.status === 'fulfilled' && r.value.success)
-          .map(r => r.value.data);
-        if (successful.length > 0) {
-          const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
-          successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
-          const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
-          const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
-          aiSignal = {
-            signal: finalSignal,
-            confidence: avgConfidence,
-            reason: successful.map(d => d.reason).join(' '),
-          };
-        }
-      } catch (e) {
-        console.error('[Engine] AI error:', e);
+          }
+          return { model, success: false };
+        })
+      );
+      const successful = results
+        .filter(r => r.status === 'fulfilled' && r.value.success)
+        .map(r => r.value.data);
+      if (successful.length > 0) {
+        const signalCount = { BUY: 0, SELL: 0, HOLD: 0 };
+        successful.forEach(d => { if (signalCount[d.signal] !== undefined) signalCount[d.signal]++; });
+        const finalSignal = Object.keys(signalCount).reduce((a, b) => signalCount[a] > signalCount[b] ? a : b);
+        const avgConfidence = Math.round(successful.reduce((s, d) => s + d.confidence, 0) / successful.length);
+        aiSignal = {
+          signal: finalSignal,
+          confidence: avgConfidence,
+          reason: successful.map(d => d.reason).join(' '),
+        };
       }
-    }
-
-    // ─── Final decision ─────────────────────────────────────────
-    let finalSignal = 'HOLD';
-    let confidence = 0;
-    let reason = 'No clear signal';
-
-    if (aiSignal.signal === 'BUY' && aiSignal.confidence >= 55) {
-      finalSignal = 'BUY';
-      confidence = aiSignal.confidence;
-      reason = aiSignal.reason || 'AI BUY';
-    } else if (aiSignal.signal === 'SELL' && aiSignal.confidence >= 55) {
-      finalSignal = 'SELL';
-      confidence = aiSignal.confidence;
-      reason = aiSignal.reason || 'AI SELL';
-    } else if (preliminarySignal !== 'HOLD' && Math.abs(score) >= 2.5) {
-      finalSignal = preliminarySignal;
-      confidence = 60 + Math.abs(score) * 5;
-      reason = `Technical score ${score.toFixed(1)}`;
+    } catch (e) {
+      console.error('[Engine] AI error:', e);
     }
 
     // ─── Store signal ───────────────────────────────────────────
     this.lastSignal = {
-      signal: finalSignal,
-      confidence: Math.min(Math.round(confidence), 100),
-      reason: reason || 'No reason',
+      signal: aiSignal.signal,
+      confidence: aiSignal.confidence,
+      reason: aiSignal.reason || 'No reason',
       price: this.lastPrice,
       timestamp: new Date().toISOString(),
     };
 
     // ─── Auto-trade ─────────────────────────────────────────────
-    if (finalSignal !== 'HOLD' && confidence >= 55) {
-      await this.executeTrade(finalSignal, confidence, reason);
+    if (aiSignal.signal !== 'HOLD' && aiSignal.confidence >= 55) {
+      await this.executeTrade(aiSignal.signal, aiSignal.confidence, aiSignal.reason);
     }
 
-    console.log(`[Engine] Signal: ${finalSignal} (${confidence}%) - ${reason}`);
+    console.log(`[Engine] Signal: ${aiSignal.signal} (${aiSignal.confidence}%) - ${aiSignal.reason?.slice(0, 50)}...`);
   }
 
   // ─── Execute trade ─────────────────────────────────────────────
   async executeTrade(signal, confidence, reason) {
     try {
-      // Check for existing open trade
+      // Check existing open trade
       const existing = await supabase
         .from('trades')
         .select('*')
@@ -262,7 +225,6 @@ Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
         .single();
 
       if (existing.data) {
-        // If we already have a trade, exit if opposite signal or SL/TP hit
         const trade = existing.data;
         const price = this.lastPrice;
         const entry = trade.entry_price;
@@ -271,7 +233,6 @@ Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
         let pnl = 0;
         let closed = false;
 
-        // Check stop-loss / take-profit
         if (trade.type === 'BUY') {
           if (price <= sl) { pnl = (price - entry) * trade.quantity; closed = true; }
           else if (price >= tp) { pnl = (price - entry) * trade.quantity; closed = true; }
@@ -280,7 +241,6 @@ Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
           else if (price <= tp) { pnl = (entry - price) * trade.quantity; closed = true; }
         }
 
-        // Or if signal is opposite with high confidence
         if (!closed && ((signal === 'SELL' && trade.type === 'BUY') || (signal === 'BUY' && trade.type === 'SELL')) && confidence > 70) {
           const exitPrice = this.lastPrice;
           pnl = (trade.type === 'BUY') ? (exitPrice - entry) * trade.quantity : (entry - exitPrice) * trade.quantity;
@@ -288,7 +248,6 @@ Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
         }
 
         if (closed) {
-          // Update balance (paper)
           const user = await supabase.from('users').select('paper_balance').eq('email', this.email).single();
           const balance = user.data?.paper_balance || 1000;
           const newBalance = balance + pnl;
@@ -306,15 +265,14 @@ Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
           console.log(`[Engine] Trade closed: ${pnl > 0 ? 'Profit' : 'Loss'} $${pnl.toFixed(2)}`);
           return;
         }
-        return; // Trade still active
+        return;
       }
 
-      // ─── No open trade – enter ───────────────────────────────
+      // ─── Enter new trade ─────────────────────────────────────
       const user = await supabase.from('users').select('paper_balance').eq('email', this.email).single();
       const balance = user.data?.paper_balance || 1000;
       if (balance < 1) return;
 
-      // Position sizing: 1% of balance, max $0.50
       const tradeAmount = Math.min(balance * 0.01, 0.50);
       const quantity = tradeAmount / this.lastPrice;
 
@@ -354,39 +312,25 @@ Respond ONLY as JSON: {"signal":"BUY","confidence":85,"reason":"..."}`;
     }
   }
 
-  // ─── Get latest signal ────────────────────────────────────────
-  getLatestSignal() {
-    return this.lastSignal;
-  }
+  getLatestSignal() { return this.lastSignal; }
 
   stop() {
     this.isRunning = false;
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
+    if (this.ws) { this.ws.close(); this.ws = null; }
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     console.log('[Engine] Stopped');
   }
 }
 
-// ─── Singleton engine instance ──────────────────────────────────
 let engineInstance = null;
 
 function startEngine(email, symbol = 'BTCUSDT') {
-  if (engineInstance) {
-    engineInstance.stop();
-  }
+  if (engineInstance) { engineInstance.stop(); }
   engineInstance = new TradingEngine(email, symbol);
   engineInstance.start();
   return engineInstance;
 }
 
-function getEngine() {
-  return engineInstance;
-}
+function getEngine() { return engineInstance; }
 
 module.exports = { startEngine, getEngine };
