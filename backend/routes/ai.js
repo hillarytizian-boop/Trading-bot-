@@ -11,6 +11,7 @@ const MODELS = ['deepseek-ai/deepseek-v4-pro', 'z-ai/glm-5.2'];
 
 async function queryNvidiaModel(model, prompt) {
   try {
+    console.log(`[AI] Querying ${model}...`);
     const completion = await nvidiaClient.chat.completions.create({
       model,
       messages: [{ role: 'user', content: prompt }],
@@ -18,12 +19,12 @@ async function queryNvidiaModel(model, prompt) {
       max_tokens: 300,
     });
     const content = completion.choices[0].message.content;
+    console.log(`[AI] ${model} raw response:`, content);
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       if (parsed.signal) return { model, success: true, data: parsed };
     }
-    // If not JSON, try to extract signal/confidence from raw text
     const signalMatch = content.match(/\b(BUY|SELL|HOLD)\b/i);
     const confidenceMatch = content.match(/(\d{1,3})%/);
     return {
@@ -36,7 +37,8 @@ async function queryNvidiaModel(model, prompt) {
       },
     };
   } catch (e) {
-    return { model, success: false };
+    console.error(`[AI] ${model} error:`, e.message);
+    return { model, success: false, error: e.message };
   }
 }
 
@@ -67,19 +69,23 @@ function getIndicators(closes) {
   return { rsi, macd, ema20, ema50, atr };
 }
 
-// Exported function for agent to call directly (no HTTP overhead)
 async function getAIAnalysis(email, market, price, closes) {
+  console.log(`[AI] getAIAnalysis called: market=${market}, price=${price}`);
   try {
     let closesData = closes;
     if (!closesData || closesData.length < 14) {
       const symbol = (market || 'BTCUSDT').replace('/', '');
       const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=50`;
+      console.log(`[AI] Fetching klines from ${url}`);
       const response = await fetch(url);
       const data = await response.json();
       closesData = data.map(c => parseFloat(c[4]));
     }
     const ind = getIndicators(closesData);
-    if (!ind) return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data' };
+    if (!ind) {
+      console.log('[AI] Not enough indicators');
+      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data' };
+    }
 
     const { rsi, macd, ema20, ema50, atr } = ind;
     const currentPrice = price || closesData[closesData.length-1];
@@ -96,10 +102,12 @@ Respond ONLY as JSON:
 {"signal":"BUY","confidence":84,"reason":"..."}
 Never return HOLD unless there is genuinely no trading edge.`;
 
+    console.log('[AI] Prompt:', prompt);
     const results = await Promise.allSettled(MODELS.map(m => queryNvidiaModel(m, prompt)));
     const good = results.filter(r => r.status === 'fulfilled' && r.value.success).map(r => r.value.data);
 
     if (good.length === 0) {
+      console.error('[AI] All models failed');
       return { signal: 'HOLD', confidence: 0, reason: 'All NVIDIA models failed' };
     }
 
@@ -108,21 +116,24 @@ Never return HOLD unless there is genuinely no trading edge.`;
     const finalSignal = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
     const avgConf = Math.round(good.reduce((s, d) => s + d.confidence, 0) / good.length);
 
-    return {
+    const response = {
       signal: finalSignal,
       confidence: avgConf,
       reason: `NVIDIA AI: ${good.map(d => d.reason).join(' ')}`,
       breakdown: good.map((d, i) => ({ model: MODELS[i] || 'unknown', ...d })),
     };
+    console.log('[AI] Final response:', JSON.stringify(response));
+    return response;
   } catch (error) {
+    console.error('[AI] Error:', error.message);
     return { signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message };
   }
 }
 
-// HTTP endpoint (used by frontend)
 router.post('/analyze', async (req, res) => {
   const { email, market, price, closes } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
+  console.log(`[AI] /analyze request: email=${email}, market=${market}, price=${price}`);
   const result = await getAIAnalysis(email, market, price, closes);
   res.json(result);
 });
