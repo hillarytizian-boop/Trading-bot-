@@ -1,5 +1,3 @@
-const fetch = require("node-fetch");
-const fetch = require("node-fetch");
 const router = require('express').Router();
 const supabase = require('../db');
 const { getAIAnalysis } = require('./ai.js');
