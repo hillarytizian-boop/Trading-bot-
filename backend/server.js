@@ -33,6 +33,7 @@ app.use('/api/bot', safeRequire('./routes/bot'));
 app.use('/api/admin', safeRequire('./routes/admin'));
 app.use('/api/trades', safeRequire('./routes/trades'));
 app.use('/api/agent', safeRequire('./routes/agent'));
+app.use("/api/trade", safeRequire("./routes/trade"));
 app.use('/api/backtest', safeRequire('./routes/backtest'));
 app.use('/api/user', safeRequire('./routes/user'));
 console.log('✅ Routes mounted');

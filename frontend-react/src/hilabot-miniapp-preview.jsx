@@ -174,6 +174,7 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
   const [analyzing, setAnalyzing] = useState(false);
   const [agentRunning, setAgentRunning] = useState(false);
   const scrollRef = useRef(null);
+  const autoAnalyzeInterval = useRef(null);
   const wsRef = useRef(null);
   const lastUpdate = useRef(0);
 
@@ -183,6 +184,14 @@ function SignalsScreen({ binance, onOpenSettings, selectedSymbol = "BTC/USDT", p
     const wsUrl = `wss://stream.binance.com:9443/ws/${sym}`;
     wsRef.current = new WebSocket(wsUrl);
     wsRef.current.onmessage = (e) => {
+    // Start auto-analysis every 5 seconds
+    if (!autoAnalyzeInterval.current) {
+      autoAnalyzeInterval.current = setInterval(() => {
+        if (price && priceHistory.length > 10) {
+          runAnalysis(price);
+        }
+      }, 5000);
+    }
       const data = JSON.parse(e.data);
       if (data.p) {
         const now = Date.now();
