@@ -4,8 +4,7 @@ const { getAIAnalysis } = require('./ai.js');
 const { v4: uuidv4 } = require('uuid');
 const Binance = require('binance-api-node').default;
 
-// ─── State per user ──────────────────────────────────────────────
-const agentStates = new Map(); // email -> { running, interval }
+const agentStates = new Map();
 
 async function loadState(email) {
   const { data, error } = await supabase
@@ -33,7 +32,6 @@ async function saveState(email, state) {
   await supabase.from('users').update({ agent_state: state }).eq('email', email);
 }
 
-// ─── Get current price ──────────────────────────────────────────────
 async function getPrice(symbol) {
   const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol.replace('/', '')}`;
   const res = await fetch(url);
@@ -41,7 +39,6 @@ async function getPrice(symbol) {
   return parseFloat(data.price);
 }
 
-// ─── Agent loop for a single user ──────────────────────────────────
 async function agentLoop(email) {
   const state = await loadState(email);
   if (!state.running) return;
@@ -59,11 +56,9 @@ async function agentLoop(email) {
     const price = await getPrice(symbol);
     if (!price) throw new Error('Price fetch failed');
 
-    // Update price history
     state.priceHistory.push(price);
     if (state.priceHistory.length > 100) state.priceHistory.shift();
 
-    // ─── Check open trade ──────────────────────────────────────────
     if (state.activeTradeId) {
       const { data: trade } = await supabase
         .from('trades')
@@ -91,58 +86,39 @@ async function agentLoop(email) {
             closed_at: new Date().toISOString(),
           }).eq('id', state.activeTradeId);
 
-          if (isPaper) {
-            state.paperBalance += pnl;
-          } else {
-            // Real balance update would come from Binance later
-          }
+          if (isPaper) state.paperBalance += pnl;
           state.totalPnL += pnl;
           if (pnl > 0) state.consecutiveWins++; else state.consecutiveLosses++;
           if (pnl < 0) state.dailyLoss += Math.abs(pnl);
           state.activeTradeId = null;
           await saveState(email, state);
         }
-        // If still open, exit early
         return;
       } else {
-        // Trade not found or already closed
         state.activeTradeId = null;
         await saveState(email, state);
       }
     }
 
-    // ─── No open trade – get AI signal ────────────────────────────
     const ai = await getAIAnalysis(email, symbol, price, state.priceHistory);
     if (ai.signal === 'HOLD' || ai.confidence < 60) {
-      // No trade
       await saveState(email, state);
       return;
     }
 
-    // ─── Determine balance ──────────────────────────────────────────
     let balance;
     if (isPaper) {
       balance = state.paperBalance;
     } else {
-      if (!settings.binance_api_key) {
-        await saveState(email, state);
-        return;
-      }
-      const client = Binance({
-        apiKey: settings.binance_api_key,
-        secretKey: settings.binance_secret_key,
-      });
+      if (!settings.binance_api_key) { await saveState(email, state); return; }
+      const client = Binance({ apiKey: settings.binance_api_key, secretKey: settings.binance_secret_key });
       const account = await client.accountInfo();
       const usdt = account.balances.find(b => b.asset === 'USDT');
       balance = usdt ? parseFloat(usdt.free) : 0;
     }
 
-    if (balance < 1) {
-      await saveState(email, state);
-      return;
-    }
+    if (balance < 1) { await saveState(email, state); return; }
 
-    // ─── Position sizing – max $0.50 ──────────────────────────────
     let tradeAmount = Math.min(balance * 0.01, 0.50);
     const quantity = tradeAmount / price;
 
@@ -156,7 +132,6 @@ async function agentLoop(email) {
       takeProfit = price * (1 - tpPercent/100);
     }
 
-    // ─── Execute trade ──────────────────────────────────────────────
     const tradeId = uuidv4();
     await supabase.from('trades').insert([{
       id: tradeId,
@@ -177,13 +152,11 @@ async function agentLoop(email) {
     state.activeTradeId = tradeId;
     state.tradesToday++;
     await saveState(email, state);
-
     console.log(`📈 AGENT: ${ai.signal} ${symbol} at ${price}, amount $${tradeAmount.toFixed(2)}`);
 
   } catch (error) {
     console.error('Agent loop error:', error.message);
   } finally {
-    // Schedule next loop if still running
     const refreshed = await loadState(email);
     if (refreshed.running) {
       setTimeout(() => agentLoop(email), 5000);
@@ -191,14 +164,11 @@ async function agentLoop(email) {
   }
 }
 
-// ─── Start / Stop endpoints ──────────────────────────────────────
 router.post('/start', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
-
   const state = await loadState(email);
   if (state.running) return res.json({ status: 'already running' });
-
   state.running = true;
   state.tradesToday = 0;
   state.dailyLoss = 0;
@@ -206,27 +176,20 @@ router.post('/start', async (req, res) => {
   state.consecutiveWins = 0;
   state.consecutiveLosses = 0;
   state.activeTradeId = null;
-
-  // Seed price history
   const user = await supabase.from('users').select('bot_settings').eq('email', email).single();
   const symbol = user.data?.bot_settings?.market || 'BTCUSDT';
   const url = `https://api.binance.com/api/v3/klines?symbol=${symbol.replace('/', '')}&interval=1m&limit=50`;
   const response = await fetch(url);
   const data = await response.json();
   state.priceHistory = data.map(c => parseFloat(c[4]));
-
   await saveState(email, state);
-
-  // Start the loop
   setTimeout(() => agentLoop(email), 1000);
-
   res.json({ status: 'started' });
 });
 
 router.post('/stop', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
-
   const state = await loadState(email);
   state.running = false;
   await saveState(email, state);
