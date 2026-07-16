@@ -1,12 +1,13 @@
 const router = require('express').Router();
 const supabase = require('../db');
 const Binance = require('binance-api-node').default;
+const HttpsProxyAgent = require("https-proxy-agent"); const PROXY_URL = "http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129"; const agent = new HttpsProxyAgent(PROXY_URL);
 
 router.post('/connect', async (req, res) => {
   const { email, apiKey, secretKey } = req.body;
   if (!email || !apiKey || !secretKey) return res.status(400).json({ error: 'Missing fields' });
   try {
-    const client = Binance({ apiKey: apiKey.trim(), secretKey: secretKey.trim() });
+    const client = Binance({ httpsAgent: agent,  apiKey: apiKey.trim(), secretKey: secretKey.trim() });
     await client.accountInfo();
   } catch (err) { return res.status(400).json({ error: 'Invalid keys' }); }
   await supabase.from('users').update({ binance_api_key: apiKey.trim(), binance_secret_key: secretKey.trim() }).eq('email', email);
@@ -24,7 +25,7 @@ router.get('/balance', async (req, res) => {
   const { data } = await supabase.from('users').select('binance_api_key, binance_secret_key').eq('email', email).single();
   if (!data?.binance_api_key) return res.status(401).json({ error: 'Not connected' });
   try {
-    const client = Binance({ apiKey: data.binance_api_key, secretKey: data.binance_secret_key });
+    const client = Binance({ httpsAgent: agent,  apiKey: data.binance_api_key, secretKey: data.binance_secret_key });
     const account = await client.accountInfo();
     const usdt = account.balances.find(b => b.asset === 'USDT');
     res.json({ balance: usdt ? parseFloat(usdt.free).toFixed(2) : '0.00' });

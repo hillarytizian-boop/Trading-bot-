@@ -3,6 +3,7 @@ const supabase = require('../db');
 const { getAIAnalysis } = require('./ai.js');
 const { v4: uuidv4 } = require('uuid');
 const Binance = require('binance-api-node').default;
+const HttpsProxyAgent = require("https-proxy-agent"); const PROXY_URL = "http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129"; const agent = new HttpsProxyAgent(PROXY_URL);
 
 const agentStates = new Map();
 
@@ -111,7 +112,7 @@ async function agentLoop(email) {
       balance = state.paperBalance;
     } else {
       if (!settings.binance_api_key) { await saveState(email, state); return; }
-      const client = Binance({ apiKey: settings.binance_api_key, secretKey: settings.binance_secret_key });
+      const client = Binance({ httpsAgent: agent,  apiKey: settings.binance_api_key, secretKey: settings.binance_secret_key });
       const account = await client.accountInfo();
       const usdt = account.balances.find(b => b.asset === 'USDT');
       balance = usdt ? parseFloat(usdt.free) : 0;

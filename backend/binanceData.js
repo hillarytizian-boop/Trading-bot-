@@ -1,9 +1,9 @@
 const fetch = require('node-fetch');
 const HttpsProxyAgent = require('https-proxy-agent');
 
-// Your proxy
-const PROXY = 'http://95.140.154.211:8080';
-const agent = new HttpsProxyAgent(PROXY);
+// ─── Proxy configuration ────────────────────────────────────────────
+const PROXY_URL = 'http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129';
+const agent = new HttpsProxyAgent(PROXY_URL);
 
 class DataFetcher {
   constructor() {
@@ -18,28 +18,24 @@ class DataFetcher {
     };
   }
 
-  // ─── Binance via proxy ────────────────────────────────────────────
+  // ─── Use proxy for Binance requests ──────────────────────────────
   async _binanceFetch(url) {
     const endpoints = [
       'https://api.binance.com',
-      'https://api1.binance.com',
-      'https://api2.binance.com',
-      'https://api3.binance.com'
+      'https://api1.binance.com'
     ];
     for (const base of endpoints) {
       try {
         const res = await fetch(base + url, { agent, timeout: 5000 });
-        if (res.ok) {
-          return await res.json();
-        }
+        if (res.ok) return await res.json();
       } catch (e) {
-        console.warn(`[Binance] ${base} failed via proxy:`, e.message);
+        console.warn(`[Binance] ${base} via proxy failed:`, e.message);
       }
     }
     throw new Error('All Binance endpoints failed via proxy');
   }
 
-  // ─── CoinGecko (direct, no proxy needed) ─────────────────────────
+  // ─── CoinGecko fallback (direct, no proxy needed) ─────────────────
   async _coingeckoFetch(symbol) {
     const id = this.coingeckoIds[symbol];
     if (!id) throw new Error(`No CoinGecko ID for ${symbol}`);
@@ -99,7 +95,7 @@ class DataFetcher {
     };
   }
 
-  // ─── Indicator calculations (unchanged) ──────────────────────────
+  // ─── Indicators (unchanged) ──────────────────────────────────────
   calculateIndicators(closes) {
     if (!closes || closes.length < 14) return null;
     let gains = 0, losses = 0;
