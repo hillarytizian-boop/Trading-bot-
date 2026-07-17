@@ -9,41 +9,35 @@ const nvidiaClient = new OpenAI({
   apiKey: process.env.NVIDIA_API_KEY,
 });
 
-// ─── Models ──────────────────────────────────────────────────────
 const RESEARCH_MODEL = 'deepseek-ai/deepseek-v4-flash';
 const DECISION_MODEL = 'z-ai/glm-5.2';
 
-// ─── News APIs ──────────────────────────────────────────────────
-const BINANCE_NEWS_API = 'https://api.binance.com/bapi/composite/v1/public/marketing/symbolNews';
-const CRYPTO_NEWS_API = 'https://cryptocurrency.cv/api/news';
-const BLACKNODE_NEWS_API = 'https://blacknodezw.zone.id/api/news';
-
-// ─── Helper: fetch with timeout ──────────────────────────────
-async function fetchWithTimeout(url, options = {}, timeout = 5000) {
+// ─── Helper: fetch with timeout ──────────────────────────────────
+async function fetchWithTimeout(url, options = {}, timeout = 3000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetch(url, { ...options, signal: controller.signal });
     clearTimeout(id);
-    return response;
-  } catch (error) {
+    return res;
+  } catch (e) {
     clearTimeout(id);
-    throw error;
+    throw e;
   }
 }
 
-// ─── Safe number helper ──────────────────────────────────────────
-function safeNumber(value, fallback = 0) {
-  const num = Number(value);
-  return isNaN(num) ? fallback : num;
+// ─── Safe number ──────────────────────────────────────────────────
+function safeNumber(v, fallback = 0) {
+  const n = Number(v);
+  return isNaN(n) ? fallback : n;
 }
 
-// ─── Fetch Binance news ────────────────────────────────────────
+// ─── Fetch Binance news ──────────────────────────────────────────
 async function fetchBinanceNews(symbol) {
   try {
     const cleanSymbol = symbol.replace('/', '');
-    const url = `${BINANCE_NEWS_API}?symbol=${cleanSymbol}`;
-    const response = await fetchWithTimeout(url, {}, 5000);
+    const url = `https://api.binance.com/bapi/composite/v1/public/marketing/symbolNews?symbol=${cleanSymbol}`;
+    const response = await fetchWithTimeout(url, {}, 3000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     if (data.code !== '000000') throw new Error(`API error: ${data.message || 'Unknown'}`);
@@ -61,138 +55,67 @@ async function fetchBinanceNews(symbol) {
   }
 }
 
-// ─── Fetch crypto.cv news ──────────────────────────────────────
-async function fetchCryptoNews(symbol) {
-  try {
-    const categories = {
-      'BTCUSDT': 'bitcoin',
-      'ETHUSDT': 'ethereum',
-      'SOLUSDT': 'solana',
-      'BNBUSDT': 'binancecoin',
-    };
-    const category = categories[symbol] || 'cryptocurrency';
-    const url = `${CRYPTO_NEWS_API}?limit=10&category=${category}`;
-    const response = await fetchWithTimeout(url, {}, 5000);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    return data.articles || [];
-  } catch (error) {
-    console.warn('[Crypto News] Failed:', error.message);
+// ─── Fetch Alpha Vantage news ────────────────────────────────────
+async function fetchAlphaVantageNews(symbol) {
+  const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
+  if (!apiKey) {
+    console.warn('[Alpha Vantage] API key missing');
     return [];
   }
-}
-
-// ─── Fetch Blacknode news ──────────────────────────────────────
-async function fetchBlacknodeNews(symbol) {
   try {
-    const queryMap = {
-      'BTCUSDT': 'bitcoin',
-      'ETHUSDT': 'ethereum',
-      'SOLUSDT': 'solana',
-      'BNBUSDT': 'binancecoin',
+    // Map symbol to ticker (e.g., BTCUSDT -> BTC)
+    const tickerMap = {
+      'BTCUSDT': 'BTC',
+      'ETHUSDT': 'ETH',
+      'SOLUSDT': 'SOL',
+      'BNBUSDT': 'BNB',
     };
-    const q = queryMap[symbol] || 'cryptocurrency';
-    const category = 'technology';
-    const limit = 10;
-    const url = `${BLACKNODE_NEWS_API}?q=${q}&category=${category}&limit=${limit}`;
+    const ticker = tickerMap[symbol] || 'CRYPTO';
+    const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${ticker}&apikey=${apiKey}&limit=10`;
     const response = await fetchWithTimeout(url, {}, 5000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    const articles = data.articles || data.data || data.results || [];
-    if (!Array.isArray(articles)) throw new Error('Unexpected response format');
-    return articles.map(a => ({
+    if (!data.feed || !Array.isArray(data.feed)) throw new Error('Invalid response format');
+    return data.feed.map(a => ({
       title: a.title || '',
-      description: a.description || a.content || '',
-      source: a.source || 'Blacknode',
-      url: a.url || a.link || '',
-      publishedAt: a.publishedAt || a.date || a.timestamp || new Date().toISOString(),
+      description: a.summary || '',
+      source: a.source || 'Alpha Vantage',
+      url: a.url || '',
+      publishedAt: a.time_published || new Date().toISOString(),
+      sentiment: a.overall_sentiment_score || 0,
     }));
   } catch (error) {
-    console.warn('[Blacknode News] Failed:', error.message);
+    console.warn('[Alpha Vantage News] Failed:', error.message);
     return [];
   }
 }
 
-// ─── Combine all news ──────────────────────────────────────────
-async function fetchCombinedNews(symbol) {
-  const results = await Promise.allSettled([
+// ─── Combine news ──────────────────────────────────────────────────
+async function fetchAllNews(symbol) {
+  const [binance, alpha] = await Promise.allSettled([
     fetchBinanceNews(symbol),
-    fetchCryptoNews(symbol),
-    fetchBlacknodeNews(symbol),
+    fetchAlphaVantageNews(symbol),
   ]);
-  const all = results
-    .filter(r => r.status === 'fulfilled')
-    .flatMap(r => r.value);
+  const all = [];
+  if (binance.status === 'fulfilled') all.push(...binance.value);
+  if (alpha.status === 'fulfilled') all.push(...alpha.value);
   // Deduplicate by title
   const seen = new Set();
-  const unique = all.filter(item => {
+  return all.filter(item => {
     const key = (item.title || '').toLowerCase().trim();
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
-  return unique;
 }
 
-// ─── Format news for prompt ──────────────────────────────────
-function formatNewsForPrompt(articles) {
-  if (!articles || articles.length === 0) {
-    return 'No recent crypto news available.';
-  }
-  return articles.map((a, i) =>
-    `${i+1}. ${a.title}\n   Source: ${a.source || 'Unknown'}\n   ${a.description || ''}\n   Published: ${a.publishedAt ? new Date(a.publishedAt).toLocaleString() : 'N/A'}`
-  ).join('\n\n');
-}
-
-// ─── Helper: query NVIDIA model with retries ──────────────────
-async function queryModel(model, messages, options = {}) {
-  const defaultOpts = {
-    temperature: 0.4,
-    top_p: 0.9,
-    max_tokens: 4096,
-    stream: false,
-    timeout: 20000,
-  };
-  const opts = { ...defaultOpts, ...options };
-  let lastError;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const completion = await nvidiaClient.chat.completions.create({
-        model,
-        messages,
-        ...opts,
-      });
-      const choice = completion.choices[0];
-      const content = choice.message?.content || '';
-      return { success: true, content, reasoning: choice.message?.reasoning || null };
-    } catch (error) {
-      lastError = error;
-      console.warn(`[AI] ${model} attempt ${attempt+1} failed:`, error.message);
-      if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
-    }
-  }
-  console.error(`[AI] All attempts for ${model} failed:`, lastError?.message);
-  return { success: false, error: lastError?.message || 'Unknown error' };
-}
-
-// ─── Main AI pipeline ──────────────────────────────────────────
+// ─── Main AI pipeline ──────────────────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
   try {
-    // 1. Fetch market data
     const data = await instance.getAnalysisData(symbol);
     if (!data || !data.closes || data.closes.length < 20) {
       return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥20 candles)' };
     }
-
-    // 2. Fetch combined news (with error handling)
-    let newsArticles = [];
-    try {
-      newsArticles = await fetchCombinedNews(symbol);
-    } catch (newsError) {
-      console.warn('[AI] News fetch error:', newsError.message);
-      // continue without news
-    }
-    const newsText = formatNewsForPrompt(newsArticles);
 
     const ind = instance.calculateIndicators(data.closes);
     if (!ind) {
@@ -211,68 +134,15 @@ async function getAIAnalysis(email, symbol, price, closes) {
     const volume = data.volumes && data.volumes.length > 0 ? data.volumes[data.volumes.length-1] : 0;
     const avgVolume = data.volumes && data.volumes.length > 0 ? data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length : 0;
 
+    // ─── Fetch combined news ──────────────────────────────────────
+    const newsArticles = await fetchAllNews(symbol);
+    const newsText = newsArticles.length
+      ? newsArticles.map((a, i) => `${i+1}. ${a.title} (${a.source})`).join('\n')
+      : 'No news available.';
+
     // ─── Step 1: DeepSeek Research ──────────────────────────────
-    const researchPrompt = `You are a senior market analyst. Perform a deep research on the following cryptocurrency market data and recent news (Binance, Crypto.cv, Blacknode).
+    const researchPrompt = `You are a senior market analyst. Research the following data and recent news.
 
-=== MARKET DATA ===
-Symbol: ${symbol}
-Current Price: $${currentPrice.toFixed(2)}
-
-Technical Indicators:
-- RSI(14): ${rsi.toFixed(2)}
-- MACD: ${macd.toFixed(4)}
-- EMA20: ${ema20.toFixed(2)}
-- EMA50: ${ema50.toFixed(2)}
-- EMA200: ${ema200.toFixed(2)}
-- ATR(14): ${atr.toFixed(4)}
-- Bollinger Upper: ${bbUpper.toFixed(2)}
-- Bollinger Lower: ${bbLower.toFixed(2)}
-- Volume: ${volume}
-- Avg Volume: ${avgVolume.toFixed(2)}
-
-Market Structure:
-- Trend: ${currentPrice > ema20 && ema20 > ema50 && ema50 > ema200 ? 'Bullish' : currentPrice < ema20 && ema20 < ema50 && ema50 < ema200 ? 'Bearish' : 'Sideways'}
-- Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
-- Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
-
-=== RECENT CRYPTO NEWS ===
-${newsText}
-
-=== RESEARCH TASK ===
-Provide a comprehensive research summary covering:
-1. Trend strength and direction.
-2. Momentum and overbought/oversold conditions.
-3. Volatility and risk.
-4. Volume analysis.
-5. Key support/resistance levels.
-6. How recent news events may impact price (sentiment analysis).
-7. Potential breakout or reversal scenarios.
-8. Any other relevant observations.
-
-Your summary should be detailed, objective, and actionable for a trading decision.`;
-
-    const researchResult = await queryModel(RESEARCH_MODEL, [
-      { role: 'user', content: researchPrompt }
-    ], { temperature: 1.0, top_p: 0.95, max_tokens: 4096 });
-
-    let researchSummary = '';
-    let researchError = null;
-    if (researchResult.success) {
-      researchSummary = researchResult.content;
-      console.log('[AI] DeepSeek research completed.');
-    } else {
-      researchError = researchResult.error;
-      console.warn('[AI] DeepSeek research failed:', researchError);
-    }
-
-    // ─── Step 2: GLM Decision ──────────────────────────────────
-    const decisionPrompt = `You are an institutional-grade cryptocurrency trading analyst. Based on the following research summary and raw market data, provide a final trading decision (BUY, SELL, or HOLD) with confidence score.
-
-=== RESEARCH SUMMARY ===
-${researchSummary || 'Research unavailable. Use only the raw data below.'}
-=== END OF RESEARCH ===
-
-=== RAW MARKET DATA ===
 Symbol: ${symbol}
 Price: $${currentPrice.toFixed(2)}
 RSI: ${rsi.toFixed(2)}
@@ -287,116 +157,86 @@ Volume: ${volume}
 Avg Volume: ${avgVolume.toFixed(2)}
 Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
 Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
-Recent News: ${newsArticles.length} articles
+News: ${newsText}
 
-=== RISK RULES ===
-- Never recommend a trade with Risk:Reward below 1:2.
-- Reject trades that move directly into support or resistance.
-- Require at least three independent confirmations.
-- Prefer trading with the dominant trend.
-- If confidence is below 75%, return HOLD.
+Provide a comprehensive summary covering technical outlook, sentiment, and any news impact. Be detailed.`;
 
-Return ONLY valid JSON:
-{
-  "signal":"BUY|SELL|HOLD",
-  "confidence":0,
-  "trend":"Bullish|Bearish|Sideways",
-  "market_regime":"Trending|Ranging|High Volatility",
-  "entry_price":0,
-  "stop_loss":0,
-  "take_profit":0,
-  "risk_reward":"1:2.5",
-  "expected_move_percent":0,
-  "trade_duration":"Scalp|Intraday|Swing",
-  "reason":"Detailed explanation using all data.",
-  "pros":["...","...","..."],
-  "cons":["...","...","..."],
-  "indicator_scores":{
-    "RSI":0,
-    "MACD":0,
-    "EMA":0,
-    "ADX":0,
-    "Volume":0,
-    "Trend":0,
-    "SupportResistance":0
-  }
-}`;
+    const research = await nvidiaClient.chat.completions.create({
+      model: RESEARCH_MODEL,
+      messages: [{ role: 'user', content: researchPrompt }],
+      temperature: 1.0,
+      top_p: 0.95,
+      max_tokens: 4096,
+      timeout: 20000,
+    });
+    const researchSummary = research.choices[0].message.content || 'Research unavailable.';
 
-    const decisionResult = await queryModel(DECISION_MODEL, [
-      { role: 'user', content: decisionPrompt }
-    ], { temperature: 0.4, top_p: 0.9, max_tokens: 1024 });
+    // ─── Step 2: GLM Decision ──────────────────────────────────
+    const decisionPrompt = `You are a professional crypto trader. Based on the research summary and raw data, make a final decision.
 
-    if (!decisionResult.success) {
-      return {
-        signal: 'HOLD',
-        confidence: 0,
-        reason: `GLM decision failed: ${decisionResult.error || 'Unknown'}`,
-      };
-    }
+Research summary:
+${researchSummary}
 
-    let ai;
-    try {
-      const jsonMatch = decisionResult.content.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found');
-      ai = JSON.parse(jsonMatch[0]);
-    } catch (e) {
-      return {
-        signal: 'HOLD',
-        confidence: 0,
-        reason: `Failed to parse GLM response: ${e.message}`,
-      };
-    }
+Raw data:
+Symbol: ${symbol}
+Price: $${currentPrice.toFixed(2)}
+RSI: ${rsi.toFixed(2)}
+MACD: ${macd.toFixed(4)}
+EMA20: ${ema20.toFixed(2)}
+EMA50: ${ema50.toFixed(2)}
+EMA200: ${ema200.toFixed(2)}
+ATR: ${atr.toFixed(4)}
+Bollinger Upper: ${bbUpper.toFixed(2)}
+Bollinger Lower: ${bbLower.toFixed(2)}
+Volume: ${volume}
+Avg Volume: ${avgVolume.toFixed(2)}
+Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
+Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
+News count: ${newsArticles.length}
 
-    const confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 0));
+Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}
+Confidence must be 75+ to trade.`;
 
-    const support = Math.min(...data.closes) * 0.99;
-    const resistance = Math.max(...data.closes) * 1.01;
-    if (ai.signal === 'BUY' && Math.abs(resistance - currentPrice) / currentPrice < 0.01) {
-      ai.signal = 'HOLD';
-      ai.reason = (ai.reason || '') + ' Too close to resistance.';
-    }
-    if (ai.signal === 'SELL' && Math.abs(currentPrice - support) / currentPrice < 0.01) {
-      ai.signal = 'HOLD';
-      ai.reason = (ai.reason || '') + ' Too close to support.';
-    }
+    const decision = await nvidiaClient.chat.completions.create({
+      model: DECISION_MODEL,
+      messages: [{ role: 'user', content: decisionPrompt }],
+      temperature: 0.4,
+      max_tokens: 500,
+      timeout: 15000,
+    });
 
-    if (confidence < 75) {
-      ai.signal = 'HOLD';
-      ai.reason = (ai.reason || '') + ' (confidence below 75%)';
-    }
+    const content = decision.choices[0].message.content;
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON returned from GLM');
+    const result = JSON.parse(match[0]);
+
+    const confidence = Math.min(100, Math.max(0, Number(result.confidence) || 0));
+    let signal = result.signal || 'HOLD';
+    if (confidence < 75) signal = 'HOLD';
 
     return {
-      signal: ai.signal || 'HOLD',
-      confidence: confidence,
-      trend: ai.trend || 'Sideways',
-      market_regime: ai.market_regime || 'Ranging',
-      entry_price: safeNumber(ai.entry_price, currentPrice),
-      stop_loss: safeNumber(ai.stop_loss, 0),
-      take_profit: safeNumber(ai.take_profit, 0),
-      risk_reward: ai.risk_reward || '1:1',
-      expected_move_percent: safeNumber(ai.expected_move_percent, 0),
-      trade_duration: ai.trade_duration || 'Intraday',
-      reason: ai.reason || 'No reason provided',
-      pros: Array.isArray(ai.pros) ? ai.pros : [],
-      cons: Array.isArray(ai.cons) ? ai.cons : [],
-      indicator_scores: ai.indicator_scores || {},
+      signal,
+      confidence,
+      trend: result.trend || 'Sideways',
+      market_regime: result.market_regime || 'Ranging',
+      entry_price: safeNumber(result.entry_price, currentPrice),
+      stop_loss: safeNumber(result.stop_loss, 0),
+      take_profit: safeNumber(result.take_profit, 0),
+      risk_reward: result.risk_reward || '1:1',
+      expected_move_percent: safeNumber(result.expected_move_percent, 0),
+      trade_duration: result.trade_duration || 'Intraday',
+      reason: result.reason || 'No reason',
+      pros: result.pros || [],
+      cons: result.cons || [],
+      indicator_scores: result.indicator_scores || {},
       news_articles: newsArticles,
-      research_summary: researchSummary || null,
-      research_error: researchError,
-      reasoning: decisionResult.reasoning || null,
-      data: {
-        price: currentPrice,
-        rsi,
-        macd,
-        ema20,
-        ema50,
-        ema200,
-        atr,
-      },
+      research_summary: researchSummary,
+      data: { price: currentPrice, rsi, macd, ema20, ema50, ema200, atr },
     };
   } catch (error) {
-    console.error('[AI] Fatal error:', error.message, error.stack);
-    return { signal: 'HOLD', confidence: 0, reason: 'Internal error: ' + error.message };
+    console.error('[AI] Error:', error.message);
+    // No fallback – return HOLD with error
+    return { signal: 'HOLD', confidence: 0, reason: `AI error: ${error.message}` };
   }
 }
 
@@ -407,12 +247,19 @@ router.post('/analyze', async (req, res) => {
   const email = req.user?.email || req.body.email || 'demo@example.com';
   if (!email) return res.status(400).json({ error: 'Email required' });
 
+  // 30‑second global timeout (longer for two model calls)
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('Analysis timeout')), 30000)
+  );
   try {
-    const result = await getAIAnalysis(email, symbol, null, null);
+    const result = await Promise.race([
+      getAIAnalysis(email, symbol, null, null),
+      timeoutPromise,
+    ]);
     res.json(result);
   } catch (error) {
     console.error('[AI] Route error:', error.message);
-    res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message });
+    res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Timeout or error' });
   }
 });
 
