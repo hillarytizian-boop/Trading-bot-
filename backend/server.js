@@ -68,15 +68,6 @@ async function authenticate(req, res, next) {
     }
   }
 
-  // 2. Fallback (only in development)
-  const email = req.body?.email || req.query?.email;
-  if (email && process.env.NODE_ENV !== 'production') {
-    req.user = { email, id: email };
-    console.log(`[AUTH] Development fallback email: ${email}`);
-    return next();
-  }
-
-  // 3. No valid auth
   return res.status(401).json({ error: 'Authentication required' });
 }
 
@@ -166,3 +157,14 @@ process.on('SIGTERM', () => {
 
 // ─── Start server ──────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+  // 2. Fallback – only if explicitly enabled (demo/testing)
+  const email = req.body?.email || req.query?.email;
+  if (email && process.env.ALLOW_EMAIL_FALLBACK === 'true') {
+    req.user = { email, id: email };
+    console.log(`[AUTH] Fallback (demo) email: ${email}`);
+    return next();
+  }
+
+  // 3. No valid auth
+  return res.status(401).json({ error: 'Authentication required' });
