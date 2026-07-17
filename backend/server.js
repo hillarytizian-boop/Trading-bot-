@@ -1,10 +1,12 @@
-// ─── Global WebSocket polyfill (must be before any route) ──────
-global.WebSocket = require('ws');
+// ─── Global fetch polyfill ──────────────────────────────────────────
+const fetch = require('node-fetch');
+global.fetch = fetch;
 
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const compression = require('compression');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,6 +14,49 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(compression());
 app.use(express.json());
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+// ─── Authentication middleware with fallback ──────────────────────
+async function authenticate(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  // 1. If JWT token is provided, verify it with Supabase
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    try {
+      const { data: { user }, error } = await supabase.auth.getUser(token);
+      if (!error && user) {
+        req.user = user;
+        console.log(`[AUTH] JWT user: ${user.email}`);
+        return next();
+      }
+    } catch (e) {
+      console.warn('[AUTH] JWT verification failed, falling back to email body');
+    }
+  }
+
+  // 2. Fallback: use email from request body (backward compatibility)
+  const email = req.body?.email || req.query?.email;
+  if (email) {
+    // Create a minimal user object
+    req.user = { email, id: email };
+    console.log(`[AUTH] Fallback email: ${email}`);
+    return next();
+  }
+
+  // 3. No email and no token – reject
+  return res.status(401).json({ error: 'Authentication required' });
+}
+
+// ─── Public endpoints ──────────────────────────────────────────────
+app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
+
+// ─── Protected routes (with fallback) ──────────────────────────────
+app.use('/api', authenticate);
 
 function safeRequire(routePath) {
   try {
@@ -22,8 +67,7 @@ function safeRequire(routePath) {
     return (req, res) => res.status(501).json({ error: `${routePath} not implemented` });
   } catch (e) {
     console.error(`❌ Failed to load ${routePath}:`, e.message);
-    console.error(e.stack);
-    return (req, res) => res.status(501).json({ error: `${routePath} not available: ${e.message}` });
+    return (req, res) => res.status(501).json({ error: `${routePath} not available` });
   }
 }
 
@@ -40,8 +84,7 @@ app.use('/api/user', safeRequire('./routes/user.js'));
 app.use('/api/trade', safeRequire('./routes/trade.js'));
 console.log('✅ Routes mounted');
 
-app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
-
+// ─── Serve frontend ──────────────────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
 app.use(express.static(distPath));
 
