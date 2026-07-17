@@ -3,72 +3,79 @@ global.WebSocket = require('ws');
 const router = require('express').Router();
 const OpenAI = require('openai');
 const { instance } = require('../binanceData');
+const { EMA } = require('technicalindicators');
 
 const nvidiaClient = new OpenAI({
   baseURL: 'https://integrate.api.nvidia.com/v1',
   apiKey: process.env.NVIDIA_API_KEY,
 });
 
-// Use only the faster, more reliable model
 const MODEL = 'deepseek-ai/deepseek-v4-pro';
 
 async function queryNvidiaModel(prompt) {
-  try {
-    const completion = await nvidiaClient.chat.completions.create({
-      model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.5,          // lower = more deterministic
-      top_p: 0.9,
-      max_tokens: 600,           // enough for detailed JSON
-      stream: false,
-      timeout: 10000,            // 10 seconds
-    });
-    const content = completion.choices[0].message.content;
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+  const messages = [{ role: 'user', content: prompt }];
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const completion = await nvidiaClient.chat.completions.create({
+        model: MODEL,
+        messages,
+        temperature: 0.4,
+        top_p: 0.9,
+        max_tokens: 700,
+        stream: false,
+        timeout: 15000,
+      });
+      const content = completion.choices[0].message.content;
+      let parsed;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        const match = content.match(/\{[\s\S]*\}/);
+        if (!match) throw new Error('No JSON returned');
+        parsed = JSON.parse(match[0]);
+      }
       if (parsed.signal && parsed.confidence !== undefined) {
         return { success: true, data: parsed };
       }
+      const signalMatch = content.match(/\b(BUY|SELL|HOLD)\b/i);
+      const confidenceMatch = content.match(/(\d{1,3})%/);
+      return {
+        success: true,
+        data: {
+          signal: signalMatch ? signalMatch[0].toUpperCase() : 'HOLD',
+          confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : 50,
+          reason: content.slice(0, 300),
+        },
+      };
+    } catch (error) {
+      lastError = error;
+      console.warn(`[AI] Attempt ${attempt+1} failed:`, error.message);
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
     }
-    // If not JSON, try to extract basic info
-    const signalMatch = content.match(/\b(BUY|SELL|HOLD)\b/i);
-    const confidenceMatch = content.match(/(\d{1,3})%/);
-    return {
-      success: true,
-      data: {
-        signal: signalMatch ? signalMatch[0].toUpperCase() : 'HOLD',
-        confidence: confidenceMatch ? parseInt(confidenceMatch[1]) : 50,
-        reason: content.slice(0, 300),
-      },
-    };
-  } catch (error) {
-    console.error('[AI] Model error:', error.message);
-    return { success: false, error: error.message };
   }
+  throw lastError || new Error('All NVIDIA attempts failed');
 }
 
-// ─── Helper: compute extra indicators ─────────────────────────────
 function computeExtraIndicators(closes, highs, lows, volumes) {
-  // Minimal – you can expand later
-  const avgVolume = volumes ? volumes.reduce((a,b) => a+b, 0) / volumes.length : 0;
-  const currentVolume = volumes ? volumes[volumes.length-1] : 0;
+  const avgVolume = volumes && volumes.length > 0 ? volumes.reduce((a, b) => a + b, 0) / volumes.length : 0;
+  const currentVolume = volumes && volumes.length > 0 ? volumes[volumes.length - 1] : 0;
   const high = Math.max(...closes);
   const low = Math.min(...closes);
   const support = low * 0.99;
   const resistance = high * 1.01;
-  // Trend from EMA alignment
-  const ema20 = closes.slice(-20).reduce((a,b) => a+b, 0) / Math.min(20, closes.length);
-  const ema50 = closes.slice(-50).reduce((a,b) => a+b, 0) / Math.min(50, closes.length);
-  const ema200 = closes.slice(-200).reduce((a,b) => a+b, 0) / Math.min(200, closes.length);
-  let trend = 'Sideways';
-  if (ema20 > ema50 && ema50 > ema200) trend = 'Bullish';
-  else if (ema20 < ema50 && ema50 < ema200) trend = 'Bearish';
-  // Multi‑timeframe – simplified
-  const trend1m = trend; // placeholder
-  const trend5m = trend;
-  const trend15m = trend;
-  const trend1h = trend;
+
+  const ema20 = EMA.calculate({ period: 20, values: closes }).at(-1);
+  const ema50 = EMA.calculate({ period: 50, values: closes }).at(-1);
+  const ema200 = EMA.calculate({ period: 200, values: closes }).at(-1);
+
+  const bullish = ema20 > ema50 && ema50 > ema200;
+  const bearish = ema20 < ema50 && ema50 < ema200;
+  const trend = bullish ? 'Bullish' : bearish ? 'Bearish' : 'Sideways';
+
+  const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
+  const highVolume = volumeRatio > 1.5;
+
   return {
     avgVolume,
     currentVolume,
@@ -77,29 +84,31 @@ function computeExtraIndicators(closes, highs, lows, volumes) {
     support,
     resistance,
     trend,
-    trend1m,
-    trend5m,
-    trend15m,
-    trend1h,
+    ema20,
+    ema50,
+    ema200,
+    bullish,
+    bearish,
+    volumeRatio,
+    highVolume,
+    trend1m: trend,
+    trend5m: trend,
+    trend15m: trend,
+    trend1h: trend,
   };
 }
 
-router.post('/analyze', async (req, res) => {
-  const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
-  const symbol = rawSymbol.replace(/\//g, '');
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email required' });
+const MIN_ADX = 20;
 
+async function getAIAnalysis(email, symbol, price, closes) {
   try {
     const data = await instance.getAnalysisData(symbol);
-    console.log(`[AI] Fetched ${data.closes.length} candles for ${symbol}`);
-    if (!data || !data.closes || data.closes.length < 20) {
-      return res.json({ signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need 20+ candles)' });
+    if (!data || !data.closes || data.closes.length < 50) {
+      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥50 candles)' };
     }
-
     const ind = instance.calculateIndicators(data.closes);
     if (!ind) {
-      return res.json({ signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' });
+      return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
 
     const extra = computeExtraIndicators(
@@ -108,10 +117,19 @@ router.post('/analyze', async (req, res) => {
       data.lows || [],
       data.volumes || []
     );
+    const currentPrice = price || data.price || ind.currentPrice;
 
-    const currentPrice = data.price || ind.currentPrice;
+    const adx = ind.adx || 25;
+    if (adx < MIN_ADX) {
+      return {
+        signal: 'HOLD',
+        confidence: 40,
+        reason: `Weak trend (ADX ${adx.toFixed(1)} < ${MIN_ADX}). Market is ranging.`,
+      };
+    }
 
-    // ─── Build the professional prompt ──────────────────────────────
+    const { bullish, bearish } = extra;
+
     const prompt = `You are an institutional-grade cryptocurrency trading analyst specializing in Binance spot and futures markets.
 
 Your objective is to maximize risk-adjusted returns, not the number of trades.
@@ -124,11 +142,11 @@ Current Price: $${currentPrice}
 Technical Indicators
 - RSI(14): ${ind.rsi.toFixed(2)}
 - MACD: ${ind.macd.toFixed(4)}
-- EMA20: ${ind.ema20.toFixed(2)}
-- EMA50: ${ind.ema50.toFixed(2)}
-- EMA200: ${ind.ema50.toFixed(2)} (approximated)
+- EMA20: ${extra.ema20.toFixed(2)}
+- EMA50: ${extra.ema50.toFixed(2)}
+- EMA200: ${extra.ema200.toFixed(2)}
 - ATR(14): ${ind.atr.toFixed(4)}
-- ADX: ${ind.adx || 25}
+- ADX: ${adx.toFixed(2)}
 - Bollinger Upper: ${ind.bbUpper.toFixed(2)}
 - Bollinger Lower: ${ind.bbLower.toFixed(2)}
 - Volume: ${extra.currentVolume}
@@ -151,7 +169,10 @@ Risk Rules
 - Never recommend a trade with Risk:Reward below 1:2.
 - Reject trades that move directly into support or resistance.
 - Reject trades with conflicting multi-timeframe trends.
-- Require confirmation from at least three independent indicators.
+- A BUY requires at least five bullish confirmations. A SELL requires at least five bearish confirmations.
+  Indicators include RSI, MACD, EMA20, EMA50, EMA200, ADX, ATR, Bollinger Bands, Volume, Support/Resistance, Trend.
+- Do not recommend trades against the higher timeframe trend.
+- Return HOLD if fewer than five confirmations agree.
 - Prefer trading with the dominant trend.
 - Consider volatility before setting stop-loss.
 - If confidence is below 75%, return HOLD.
@@ -206,29 +227,42 @@ Do not invent missing information.
 If the provided data is insufficient, explain why and return HOLD.
 Return only JSON with no markdown or additional text.`;
 
-    // ─── Query the single model ──────────────────────────────────────
-    const result = await queryNvidiaModel(prompt);
-    if (!result.success) {
-      // Fallback to rule‑based (only if AI fails completely)
-      return res.json({
-        signal: 'HOLD',
-        confidence: 0,
-        reason: 'AI model unavailable',
-        data: { price: currentPrice, rsi: ind.rsi, macd: ind.macd },
-      });
+    let result;
+    try {
+      result = await queryNvidiaModel(prompt);
+    } catch (error) {
+      console.error('[AI] All NVIDIA attempts failed:', error.message);
+      return { signal: 'HOLD', confidence: 0, reason: 'AI model unavailable' };
     }
 
-    const ai = result.data;
-    // Enforce the 75% confidence rule
-    if (ai.confidence < 75) {
+    if (!result.success) {
+      return { signal: 'HOLD', confidence: 0, reason: 'AI model error' };
+    }
+
+    let ai = result.data;
+
+    const confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 0));
+
+    const resistanceDistance = Math.abs(extra.resistance - currentPrice) / currentPrice;
+    const supportDistance = Math.abs(currentPrice - extra.support) / currentPrice;
+
+    if (ai.signal === 'BUY' && resistanceDistance < 0.01) {
+      ai.signal = 'HOLD';
+      ai.reason = (ai.reason || '') + ' Too close to resistance.';
+    }
+    if (ai.signal === 'SELL' && supportDistance < 0.01) {
+      ai.signal = 'HOLD';
+      ai.reason = (ai.reason || '') + ' Too close to support.';
+    }
+
+    if (confidence < 75) {
       ai.signal = 'HOLD';
       ai.reason = (ai.reason || '') + ' (confidence below 75%)';
     }
 
-    // Ensure we have all fields, fill defaults
-    const response = {
+    return {
       signal: ai.signal || 'HOLD',
-      confidence: ai.confidence || 0,
+      confidence: confidence,
       trend: ai.trend || 'Sideways',
       market_regime: ai.market_regime || 'Ranging',
       entry_price: ai.entry_price || currentPrice,
@@ -245,15 +279,33 @@ Return only JSON with no markdown or additional text.`;
         price: currentPrice,
         rsi: ind.rsi,
         macd: ind.macd,
-        ema20: ind.ema20,
-        ema50: ind.ema50,
+        ema20: extra.ema20,
+        ema50: extra.ema50,
+        ema200: extra.ema200,
         atr: ind.atr,
+        adx: adx,
+        volumeRatio: extra.volumeRatio,
+        highVolume: extra.highVolume,
       },
     };
-
-    res.json(response);
   } catch (error) {
     console.error('[AI] Error:', error.message);
+    return { signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message };
+  }
+}
+
+router.post('/analyze', async (req, res) => {
+  const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
+  const symbol = rawSymbol.replace(/\//g, '');
+  const email = req.user?.email || req.body.email || 'demo@example.com';
+
+  if (!email) return res.status(400).json({ error: 'Email required' });
+
+  try {
+    const result = await getAIAnalysis(email, symbol, null, null);
+    res.json(result);
+  } catch (error) {
+    console.error('[AI] Endpoint error:', error.message);
     res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message });
   }
 });
