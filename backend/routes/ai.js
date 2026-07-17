@@ -4,7 +4,6 @@ const router = require('express').Router();
 const OpenAI = require('openai');
 const { instance } = require('../binanceData');
 
-// ─── Safe initialization ──────────────────────────────────────────
 let nvidiaClient;
 try {
   nvidiaClient = new OpenAI({
@@ -18,44 +17,41 @@ try {
 const RESEARCH_MODEL = 'deepseek-ai/deepseek-v4-flash';
 const DECISION_MODEL = 'z-ai/glm-5.2';
 
-// ─── fetch with timeout ──────────────────────────────────────────
-async function fetchWithTimeout(url, options = {}, timeout = 2000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return res;
-  } catch (e) {
-    clearTimeout(id);
-    throw e;
-  }
-}
-
-// ─── OpenAI call with retries and timeout ──────────────────────
-async function openaiCallWithRetry(client, model, messages, opts, timeoutMs = 10000) {
+// ─── Helper: OpenAI call with one retry ──────────────────────────
+async function openaiCall(model, messages, opts = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  const doCall = async (attempt) => {
+  const attempt = async (tryNum) => {
     try {
-      const result = await client.chat.completions.create(
+      const result = await nvidiaClient.chat.completions.create(
         { model, messages, ...opts },
         { signal: controller.signal }
       );
       clearTimeout(timeoutId);
       return result;
     } catch (err) {
-      clearTimeout(timeoutId);
-      if (attempt < 3) {
-        console.warn(`[AI] ${model} attempt ${attempt+1} failed:`, err.message);
-        await new Promise(r => setTimeout(r, 1500));
-        return doCall(attempt + 1);
+      if (tryNum === 1) {
+        console.warn(`[AI] ${model} attempt 1 failed:`, err.message);
+        // One retry
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const result = await nvidiaClient.chat.completions.create(
+            { model, messages, ...opts },
+            { signal: controller.signal }
+          );
+          clearTimeout(timeoutId);
+          return result;
+        } catch (err2) {
+          clearTimeout(timeoutId);
+          throw err2;
+        }
       }
+      clearTimeout(timeoutId);
       throw err;
     }
   };
-  return doCall(1);
+  return attempt(1);
 }
 
 function safeNumber(v, fallback = 0) {
@@ -63,70 +59,54 @@ function safeNumber(v, fallback = 0) {
   return isNaN(n) ? fallback : n;
 }
 
-async function fetchBinanceNews(symbol) {
-  try {
-    const cleanSymbol = symbol.replace('/', '');
-    const url = `https://api.binance.com/bapi/composite/v1/public/marketing/symbolNews?symbol=${cleanSymbol}`;
-    const response = await fetchWithTimeout(url, {}, 2000);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (data.code !== '000000') throw new Error('API error');
-    return (data.data?.articles || []).map(a => ({ title: a.title || '', description: a.description || '', source: 'Binance' }));
-  } catch (e) {
-    console.warn('[Binance News] Failed:', e.message);
-    return [];
-  }
+// ─── Rule‑based fallback (no AI) ──────────────────────────────────
+function ruleBasedSignal(ind, currentPrice, extra) {
+  let score = 0;
+  const reasons = [];
+  const { rsi, macd, ema20, ema50 } = ind;
+
+  if (rsi < 30) { score += 2; reasons.push('RSI oversold'); }
+  else if (rsi > 70) { score -= 2; reasons.push('RSI overbought'); }
+  else if (rsi < 45) { score += 1; reasons.push('RSI low'); }
+  else if (rsi > 55) { score -= 1; reasons.push('RSI high'); }
+
+  if (macd > 0) { score += 1; reasons.push('MACD positive'); }
+  else if (macd < 0) { score -= 1; reasons.push('MACD negative'); }
+
+  if (currentPrice > ema20 && ema20 > ema50) { score += 1; reasons.push('Uptrend'); }
+  else if (currentPrice < ema20 && ema20 < ema50) { score -= 1; reasons.push('Downtrend'); }
+
+  let signal = 'HOLD';
+  let confidence = 30;
+  if (score >= 2) { signal = 'BUY'; confidence = 60 + score * 5; }
+  else if (score <= -2) { signal = 'SELL'; confidence = 60 + Math.abs(score) * 5; }
+  else { signal = 'HOLD'; confidence = 30 + Math.abs(score) * 5; }
+  confidence = Math.min(100, Math.max(0, confidence));
+  if (confidence < 75) signal = 'HOLD';
+
+  return {
+    signal,
+    confidence,
+    reason: `Rule‑based: ${reasons.join(', ')}`,
+    trend: score > 0 ? 'Bullish' : score < 0 ? 'Bearish' : 'Sideways',
+    market_regime: 'Ranging',
+  };
 }
 
-async function fetchAlphaVantageNews(symbol) {
-  const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (!apiKey) return [];
-  try {
-    const tickerMap = { 'BTCUSDT': 'BTC', 'ETHUSDT': 'ETH', 'SOLUSDT': 'SOL', 'BNBUSDT': 'BNB' };
-    const ticker = tickerMap[symbol] || 'CRYPTO';
-    const url = `https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers=${ticker}&apikey=${apiKey}&limit=5`;
-    const response = await fetchWithTimeout(url, {}, 2000);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    if (!data.feed) return [];
-    return data.feed.map(a => ({ title: a.title || '', description: a.summary || '', source: a.source || 'Alpha Vantage' }));
-  } catch (e) {
-    console.warn('[Alpha Vantage News] Failed:', e.message);
-    return [];
-  }
-}
-
-async function fetchAllNews(symbol) {
-  const [binance, alpha] = await Promise.allSettled([
-    fetchBinanceNews(symbol),
-    fetchAlphaVantageNews(symbol),
-  ]);
-  const all = [];
-  if (binance.status === 'fulfilled') all.push(...binance.value);
-  if (alpha.status === 'fulfilled') all.push(...alpha.value);
-  const seen = new Set();
-  return all.filter(item => {
-    const key = (item.title || '').toLowerCase().trim();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-// ─── Main analysis ──────────────────────────────────────────────
+// ─── Main analysis ──────────────────────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
+  const start = Date.now();
+
   try {
-    console.log('[AI] Step 1: Fetching market data...');
+    console.log('[AI] Fetching market data...');
     const data = await instance.getAnalysisData(symbol);
     if (!data || !data.closes || data.closes.length < 20) {
-      console.warn('[AI] Insufficient market data');
-      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient market data (need ≥20 candles)' };
+      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient market data' };
     }
 
-    console.log('[AI] Step 2: Calculating indicators...');
+    console.log('[AI] Calculating indicators...');
     const ind = instance.calculateIndicators(data.closes);
     if (!ind) {
-      console.warn('[AI] Indicator calculation failed');
       return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
 
@@ -139,117 +119,104 @@ async function getAIAnalysis(email, symbol, price, closes) {
     const bbUpper = safeNumber(ind.bbUpper);
     const bbLower = safeNumber(ind.bbLower);
     const currentPrice = price || data.price || ind.currentPrice || 0;
-    const volume = data.volumes?.[data.volumes.length-1] || 0;
-    const avgVolume = data.volumes ? data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length : 0;
 
-    console.log('[AI] Step 3: Fetching news...');
-    const newsArticles = await fetchAllNews(symbol);
-    const newsText = newsArticles.length
-      ? newsArticles.map((a, i) => `${i+1}. ${a.title} (${a.source})`).join('\n')
-      : 'No news available.';
-
-    // ─── DeepSeek Research ──────────────────────────────────────
-    console.log('[AI] Step 4: Calling DeepSeek for research...');
-    let researchSummary = 'Research unavailable.';
+    // ─── Attempt AI decision (only if NVIDIA client exists) ──────
+    let aiResult = null;
     if (nvidiaClient) {
       try {
-        const researchPrompt = `Analyze market data and news for ${symbol}.
-Price: $${currentPrice.toFixed(2)}
+        console.log('[AI] Calling GLM for decision...');
+        const prompt = `Analyze ${symbol} at $${currentPrice}.
 RSI: ${rsi.toFixed(2)}, MACD: ${macd.toFixed(4)}
 EMA20: ${ema20.toFixed(2)}, EMA50: ${ema50.toFixed(2)}, EMA200: ${ema200.toFixed(2)}
 ATR: ${atr.toFixed(4)}, BB Upper: ${bbUpper.toFixed(2)}, BB Lower: ${bbLower.toFixed(2)}
-Volume: ${volume}, Avg Vol: ${avgVolume.toFixed(2)}
-Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}, Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
-News: ${newsText}
-Provide a concise summary of trend, momentum, sentiment, and a recommended stance (BUY/SELL/HOLD) with reason.`;
+Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
 
-        const research = await openaiCallWithRetry(
-          nvidiaClient,
-          RESEARCH_MODEL,
-          [{ role: 'user', content: researchPrompt }],
-          { temperature: 1.0, top_p: 0.95, max_tokens: 1024 },
-          15000
-        );
-        researchSummary = research.choices[0].message.content || 'Research unavailable.';
-        console.log('[AI] DeepSeek research completed.');
-      } catch (e) {
-        console.error('[DeepSeek] Error:', e.message);
-        researchSummary = `Research error: ${e.message}`;
-      }
-    } else {
-      researchSummary = 'NVIDIA client not initialized.';
-    }
-
-    // ─── GLM Decision ────────────────────────────────────────────
-    console.log('[AI] Step 5: Calling GLM for decision...');
-    let signal = 'HOLD';
-    let confidence = 0;
-    let reason = 'No decision';
-    if (nvidiaClient) {
-      try {
-        const decisionPrompt = `Based on research, decide:\nResearch: ${researchSummary}\nReturn JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
-        const decision = await openaiCallWithRetry(
-          nvidiaClient,
+        const decision = await openaiCall(
           DECISION_MODEL,
-          [{ role: 'user', content: decisionPrompt }],
+          [{ role: 'user', content: prompt }],
           { temperature: 0.4, max_tokens: 300 },
-          15000
+          8000 // 8s timeout
         );
+
         const content = decision.choices[0].message.content;
         const match = content.match(/\{[\s\S]*\}/);
         if (match) {
-          const result = JSON.parse(match[0]);
-          signal = result.signal || 'HOLD';
-          confidence = Math.min(100, Math.max(0, Number(result.confidence) || 0));
-          reason = result.reason || 'No reason';
-          if (confidence < 75) signal = 'HOLD';
-          console.log('[AI] GLM decision:', signal, confidence);
-        } else {
-          throw new Error('No JSON found in GLM response');
+          const parsed = JSON.parse(match[0]);
+          aiResult = {
+            signal: parsed.signal || 'HOLD',
+            confidence: Math.min(100, Math.max(0, Number(parsed.confidence) || 0)),
+            reason: parsed.reason || 'AI decision',
+            trend: parsed.trend || 'Sideways',
+            market_regime: parsed.market_regime || 'Ranging',
+          };
+          console.log('[AI] GLM decision:', aiResult.signal, aiResult.confidence);
         }
       } catch (e) {
-        console.error('[GLM] Error:', e.message);
-        reason = `GLM error: ${e.message}`;
+        console.warn('[AI] GLM failed:', e.message);
       }
     }
 
+    // ─── If AI succeeded and confidence ≥ 75, use it ──────────────
+    if (aiResult && aiResult.confidence >= 75) {
+      return {
+        signal: aiResult.signal,
+        confidence: aiResult.confidence,
+        trend: aiResult.trend || 'Sideways',
+        market_regime: aiResult.market_regime || 'Ranging',
+        entry_price: currentPrice,
+        stop_loss: 0,
+        take_profit: 0,
+        risk_reward: '1:1',
+        expected_move_percent: 0,
+        trade_duration: 'Intraday',
+        reason: aiResult.reason || 'AI signal',
+        pros: [],
+        cons: [],
+        indicator_scores: {},
+        data: { price: currentPrice, rsi, macd, ema20, ema50, ema200, atr },
+      };
+    }
+
+    // ─── Fallback: rule‑based signal ──────────────────────────────
+    console.log('[AI] Using rule‑based fallback');
+    const fallback = ruleBasedSignal(ind, currentPrice, { ema20, ema50 });
     return {
-      signal,
-      confidence,
-      trend: 'Sideways',
-      market_regime: 'Ranging',
+      signal: fallback.signal,
+      confidence: fallback.confidence,
+      trend: fallback.trend,
+      market_regime: fallback.market_regime,
       entry_price: currentPrice,
       stop_loss: 0,
       take_profit: 0,
       risk_reward: '1:1',
       expected_move_percent: 0,
       trade_duration: 'Intraday',
-      reason,
+      reason: fallback.reason + (aiResult ? ' (AI unavailable)' : ''),
       pros: [],
       cons: [],
       indicator_scores: {},
-      news_articles: newsArticles,
-      research_summary: researchSummary,
       data: { price: currentPrice, rsi, macd, ema20, ema50, ema200, atr },
     };
   } catch (error) {
-    console.error('[AI] Fatal error:', error.message, error.stack);
+    console.error('[AI] Fatal error:', error.message);
     return {
       signal: 'HOLD',
       confidence: 0,
-      reason: `Fatal error: ${error.message}`,
+      reason: `Error: ${error.message}`,
     };
+  } finally {
+    console.log(`[AI] Total time: ${Date.now() - start}ms`);
   }
 }
 
-// ─── Routes ──────────────────────────────────────────────────────
+// ─── Routes ──────────────────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
   const email = req.user?.email || req.body.email || 'demo@example.com';
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout after 20s')), 20000));
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), 12000));
   try {
     const result = await Promise.race([getAIAnalysis(email, symbol, null, null), timeout]);
     res.json(result);
