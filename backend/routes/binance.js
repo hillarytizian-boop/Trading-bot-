@@ -3,91 +3,88 @@ const supabase = require('../db');
 const { verifyKeys } = require('../binanceClient');
 
 router.post('/connect', async (req, res) => {
-  const { email, apiKey, secretKey } = req.body;
+    const { email, apiKey, secretKey } = req.body;
 
-  // ─── Log received data (masked) ──────────────────────────────────
-  console.log('[Binance] Connect request:');
-  console.log('  email:', email);
-  console.log('  apiKey length:', apiKey ? apiKey.length : 0);
-  console.log('  secretKey length:', secretKey ? secretKey.length : 0);
-  console.log('  apiKey (first 4):', apiKey ? apiKey.slice(0,4) : 'null');
-  console.log('  secretKey (first 4):', secretKey ? secretKey.slice(0,4) : 'null');
+    // ─── Log the raw request body ──────────────────────────────────
+    console.log('[Binance] Raw request body:', JSON.stringify(req.body, null, 2));
 
-  // ─── Validate presence ────────────────────────────────────────────
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-  if (!apiKey || !apiKey.trim()) {
-    return res.status(400).json({ error: 'API key is required and cannot be empty' });
-  }
-  if (!secretKey || !secretKey.trim()) {
-    return res.status(400).json({ error: 'Secret key is required and cannot be empty' });
-  }
+    if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+    }
+    if (!apiKey || !apiKey.trim()) {
+        return res.status(400).json({ error: 'API key is required and cannot be empty' });
+    }
+    if (!secretKey || !secretKey.trim()) {
+        return res.status(400).json({ error: 'Secret key is required and cannot be empty' });
+    }
 
-  const trimmedApiKey = apiKey.trim();
-  const trimmedSecret = secretKey.trim();
+    const trimmedApiKey = apiKey.trim();
+    const trimmedSecret = secretKey.trim();
 
-  const result = await verifyKeys(trimmedApiKey, trimmedSecret);
+    console.log('[Binance] Trimmed API key length:', trimmedApiKey.length);
+    console.log('[Binance] Trimmed Secret key length:', trimmedSecret.length);
 
-  if (!result.success) {
-    const errorMsg = result.message || result.body || 'Invalid API keys';
-    return res.status(400).json({ error: errorMsg, code: result.code });
-  }
+    const result = await verifyKeys(trimmedApiKey, trimmedSecret);
 
-  // ─── Save to Supabase ──────────────────────────────────────────────
-  const { error } = await supabase
-    .from('users')
-    .update({
-      binance_api_key: trimmedApiKey,
-      binance_secret_key: trimmedSecret,
-    })
-    .eq('email', email);
+    if (!result.success) {
+        const errorMsg = result.message || result.body || 'Invalid API keys';
+        return res.status(400).json({ error: errorMsg, code: result.code });
+    }
 
-  if (error) {
-    return res.status(500).json({ error: 'Database error: ' + error.message });
-  }
+    // ─── Save to Supabase ──────────────────────────────────────────
+    const { error } = await supabase
+        .from('users')
+        .update({
+            binance_api_key: trimmedApiKey,
+            binance_secret_key: trimmedSecret,
+        })
+        .eq('email', email);
 
-  res.json({ success: true, message: 'Keys saved and verified' });
+    if (error) {
+        return res.status(500).json({ error: 'Database error: ' + error.message });
+    }
+
+    res.json({ success: true, message: 'Keys saved and verified' });
 });
 
 router.get('/status', async (req, res) => {
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: 'Missing email' });
-  const { data } = await supabase
-    .from('users')
-    .select('binance_api_key')
-    .eq('email', email)
-    .single();
-  res.json({ connected: !!(data?.binance_api_key) });
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Missing email' });
+    const { data } = await supabase
+        .from('users')
+        .select('binance_api_key')
+        .eq('email', email)
+        .single();
+    res.json({ connected: !!(data?.binance_api_key) });
 });
 
 router.get('/balance', async (req, res) => {
-  const { email } = req.query;
-  if (!email) return res.status(400).json({ error: 'Missing email' });
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ error: 'Missing email' });
 
-  const { data } = await supabase
-    .from('users')
-    .select('binance_api_key, binance_secret_key')
-    .eq('email', email)
-    .single();
+    const { data } = await supabase
+        .from('users')
+        .select('binance_api_key, binance_secret_key')
+        .eq('email', email)
+        .single();
 
-  if (!data?.binance_api_key) {
-    return res.status(401).json({ error: 'Not connected' });
-  }
+    if (!data?.binance_api_key) {
+        return res.status(401).json({ error: 'Not connected' });
+    }
 
-  try {
-    const { createBinanceClient } = require('../binanceClient');
-    const client = createBinanceClient(data.binance_api_key, data.binance_secret_key);
-    const account = await client.accountInfo();
-    const usdt = account.balances.find(b => b.asset === 'USDT');
-    res.json({ balance: usdt ? parseFloat(usdt.free).toFixed(2) : '0.00' });
-  } catch (err) {
-    await supabase
-      .from('users')
-      .update({ binance_api_key: null, binance_secret_key: null })
-      .eq('email', email);
-    res.status(401).json({ error: 'Invalid keys – reconnect' });
-  }
+    try {
+        const { createBinanceClient } = require('../binanceClient');
+        const client = createBinanceClient(data.binance_api_key, data.binance_secret_key);
+        const account = await client.accountInfo();
+        const usdt = account.balances.find(b => b.asset === 'USDT');
+        res.json({ balance: usdt ? parseFloat(usdt.free).toFixed(2) : '0.00' });
+    } catch (err) {
+        await supabase
+            .from('users')
+            .update({ binance_api_key: null, binance_secret_key: null })
+            .eq('email', email);
+        res.status(401).json({ error: 'Invalid keys – reconnect' });
+    }
 });
 
 module.exports = router;
