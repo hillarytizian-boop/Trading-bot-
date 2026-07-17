@@ -18,7 +18,7 @@ try {
 const RESEARCH_MODEL = 'deepseek-ai/deepseek-v4-flash';
 const DECISION_MODEL = 'z-ai/glm-5.2';
 
-// ─── fetch with timeout ──────────────────────────────────────────
+// ─── Helper: fetch with timeout ──────────────────────────────────
 async function fetchWithTimeout(url, options = {}, timeout = 2000) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
@@ -30,6 +30,34 @@ async function fetchWithTimeout(url, options = {}, timeout = 2000) {
     clearTimeout(id);
     throw e;
   }
+}
+
+// ─── Helper: OpenAI call with AbortController timeout ──────────
+function openaiCallWithTimeout(client, model, messages, opts = {}, timeoutMs = 10000) {
+  return new Promise(async (resolve, reject) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      reject(new Error('OpenAI request timeout'));
+    }, timeoutMs);
+
+    try {
+      const result = await client.chat.completions.create(
+        {
+          model,
+          messages,
+          ...opts,
+          // ⚠️ Do NOT include 'timeout' here – it's unsupported
+        },
+        { signal: controller.signal } // signal goes in the second argument (request options)
+      );
+      clearTimeout(timeoutId);
+      resolve(result);
+    } catch (err) {
+      clearTimeout(timeoutId);
+      reject(err);
+    }
+  });
 }
 
 function safeNumber(v, fallback = 0) {
@@ -44,7 +72,7 @@ async function fetchBinanceNews(symbol) {
     const response = await fetchWithTimeout(url, {}, 2000);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    if (data.code !== '000000') throw new Error(`API error`);
+    if (data.code !== '000000') throw new Error('API error');
     return (data.data?.articles || []).map(a => ({ title: a.title || '', description: a.description || '', source: 'Binance' }));
   } catch (e) {
     console.warn('[Binance News] Failed:', e.message);
@@ -87,7 +115,7 @@ async function fetchAllNews(symbol) {
   });
 }
 
-// ─── Main analysis – everything wrapped in try/catch ──────────
+// ─── Main analysis ──────────────────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
   try {
     const data = await instance.getAnalysisData(symbol);
@@ -116,8 +144,11 @@ async function getAIAnalysis(email, symbol, price, closes) {
       ? newsArticles.map((a, i) => `${i+1}. ${a.title} (${a.source})`).join('\n')
       : 'No news available.';
 
-    // ─── DeepSeek ──────────────────────────────────────────────────
-    const researchPrompt = `Analyze market data and news for ${symbol}.
+    // ─── DeepSeek Research ──────────────────────────────────────
+    let researchSummary = 'Research unavailable.';
+    if (nvidiaClient) {
+      try {
+        const researchPrompt = `Analyze market data and news for ${symbol}.
 Price: $${currentPrice.toFixed(2)}
 RSI: ${rsi.toFixed(2)}, MACD: ${macd.toFixed(4)}
 EMA20: ${ema20.toFixed(2)}, EMA50: ${ema50.toFixed(2)}, EMA200: ${ema200.toFixed(2)}
@@ -127,40 +158,34 @@ Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}, Resistance: ${(Math.ma
 News: ${newsText}
 Provide a concise summary of trend, momentum, sentiment, and a recommended stance (BUY/SELL/HOLD) with reason.`;
 
-    let researchSummary = '';
-    if (nvidiaClient) {
-      try {
-        const research = await nvidiaClient.chat.completions.create({
-          model: RESEARCH_MODEL,
-          messages: [{ role: 'user', content: researchPrompt }],
-          temperature: 1.0,
-          top_p: 0.95,
-          max_tokens: 1024,
-          timeout: 10000,
-        });
+        const research = await openaiCallWithTimeout(
+          nvidiaClient,
+          RESEARCH_MODEL,
+          [{ role: 'user', content: researchPrompt }],
+          { temperature: 1.0, top_p: 0.95, max_tokens: 1024 },
+          10000 // 10 seconds timeout
+        );
         researchSummary = research.choices[0].message.content || 'Research unavailable.';
       } catch (e) {
         console.warn('[DeepSeek] Failed:', e.message);
         researchSummary = 'Research unavailable due to error.';
       }
-    } else {
-      researchSummary = 'NVIDIA client not initialized.';
     }
 
-    // ─── GLM Decision ──────────────────────────────────────────────
+    // ─── GLM Decision ────────────────────────────────────────────
     let signal = 'HOLD';
     let confidence = 0;
-    let reason = 'No decision from GLM';
+    let reason = 'No decision';
     if (nvidiaClient) {
       try {
         const decisionPrompt = `Based on research, decide:\nResearch: ${researchSummary}\nReturn JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
-        const decision = await nvidiaClient.chat.completions.create({
-          model: DECISION_MODEL,
-          messages: [{ role: 'user', content: decisionPrompt }],
-          temperature: 0.4,
-          max_tokens: 300,
-          timeout: 10000,
-        });
+        const decision = await openaiCallWithTimeout(
+          nvidiaClient,
+          DECISION_MODEL,
+          [{ role: 'user', content: decisionPrompt }],
+          { temperature: 0.4, max_tokens: 300 },
+          10000
+        );
         const content = decision.choices[0].message.content;
         const match = content.match(/\{[\s\S]*\}/);
         if (match) {
@@ -203,14 +228,13 @@ Provide a concise summary of trend, momentum, sentiment, and a recommended stanc
   }
 }
 
-// ─── Route with domain isolation ──────────────────────────────────
+// ─── Routes ──────────────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
   const email = req.user?.email || req.body.email || 'demo@example.com';
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  // 15‑second timeout
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000));
   try {
     const result = await Promise.race([getAIAnalysis(email, symbol, null, null), timeout]);
