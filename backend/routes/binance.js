@@ -4,24 +4,42 @@ const { verifyKeys } = require('../binanceClient');
 
 router.post('/connect', async (req, res) => {
   const { email, apiKey, secretKey } = req.body;
-  if (!email || !apiKey || !secretKey) {
-    return res.status(400).json({ error: 'Missing email, apiKey, or secretKey' });
+
+  // ─── Log received data (masked) ──────────────────────────────────
+  console.log('[Binance] Connect request:');
+  console.log('  email:', email);
+  console.log('  apiKey length:', apiKey ? apiKey.length : 0);
+  console.log('  secretKey length:', secretKey ? secretKey.length : 0);
+  console.log('  apiKey (first 4):', apiKey ? apiKey.slice(0,4) : 'null');
+  console.log('  secretKey (first 4):', secretKey ? secretKey.slice(0,4) : 'null');
+
+  // ─── Validate presence ────────────────────────────────────────────
+  if (!email) {
+    return res.status(400).json({ error: 'Email is required' });
+  }
+  if (!apiKey || !apiKey.trim()) {
+    return res.status(400).json({ error: 'API key is required and cannot be empty' });
+  }
+  if (!secretKey || !secretKey.trim()) {
+    return res.status(400).json({ error: 'Secret key is required and cannot be empty' });
   }
 
-  const result = await verifyKeys(apiKey.trim(), secretKey.trim());
+  const trimmedApiKey = apiKey.trim();
+  const trimmedSecret = secretKey.trim();
+
+  const result = await verifyKeys(trimmedApiKey, trimmedSecret);
 
   if (!result.success) {
-    // Return a consistent error object
     const errorMsg = result.message || result.body || 'Invalid API keys';
     return res.status(400).json({ error: errorMsg, code: result.code });
   }
 
-  // Save to Supabase
+  // ─── Save to Supabase ──────────────────────────────────────────────
   const { error } = await supabase
     .from('users')
     .update({
-      binance_api_key: apiKey.trim(),
-      binance_secret_key: secretKey.trim(),
+      binance_api_key: trimmedApiKey,
+      binance_secret_key: trimmedSecret,
     })
     .eq('email', email);
 

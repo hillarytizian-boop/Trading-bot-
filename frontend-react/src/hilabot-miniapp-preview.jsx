@@ -53,10 +53,20 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const displayBalance = binance?.balance || '0.00';
 
   const saveBinanceKeys = async () => {
+    console.log("[Frontend] Connecting Binance...");
+    console.log("[Frontend] Email:", localEmail);
+    console.log("[Frontend] API Key length:", apiKey ? apiKey.length : 0);
+    console.log("[Frontend] Secret Key length:", apiSecret ? apiSecret.length : 0);
+    const trimmedApi = apiKey ? apiKey.trim() : "";
+    const trimmedSecret = apiSecret ? apiSecret.trim() : "";
+    if (!trimmedApi || !trimmedSecret) {
+      alert("API key and Secret are required.");
+      return;
+    }
     if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
     setStatus('connecting');
     try {
-      const res = await fetch(`${API_BASE_URL}/api/binance/connect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
+      const res = await fetch(`${API_BASE_URL}/api/binance/connect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail.trim(), apiKey: trimmedApi, secretKey: trimmedSecret }) });
       const data = await res.json();
       if (res.ok) {
         setStatus('connected');
