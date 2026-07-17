@@ -16,6 +16,7 @@ const DECISION_MODEL = 'z-ai/glm-5.2';
 // ─── News APIs ──────────────────────────────────────────────────
 const BINANCE_NEWS_API = 'https://api.binance.com/bapi/composite/v1/public/marketing/symbolNews';
 const CRYPTO_NEWS_API = 'https://cryptocurrency.cv/api/news';
+const BLACKNODE_NEWS_API = 'https://blacknodezw.zone.id/api/news';
 
 // ─── Safe number helper ──────────────────────────────────────────
 function safeNumber(value, fallback = 0) {
@@ -23,15 +24,14 @@ function safeNumber(value, fallback = 0) {
   return isNaN(num) ? fallback : num;
 }
 
-// ─── Fetch Binance news for a specific symbol ──────────────────
+// ─── Fetch Binance news ────────────────────────────────────────
 async function fetchBinanceNews(symbol) {
   try {
-    const cleanSymbol = symbol.replace('/', ''); // e.g., BTCUSDT
+    const cleanSymbol = symbol.replace('/', '');
     const url = `${BINANCE_NEWS_API}?symbol=${cleanSymbol}`;
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Binance news error: ${response.status}`);
     const data = await response.json();
-    // Expected structure: { code: "000000", data: { articles: [...] } }
     if (data.code !== '000000') throw new Error(`Binance news API error: ${data.message || 'Unknown'}`);
     const articles = data.data?.articles || [];
     return articles.map(a => ({
@@ -42,12 +42,12 @@ async function fetchBinanceNews(symbol) {
       publishedAt: a.publishDate || new Date().toISOString(),
     }));
   } catch (error) {
-    console.warn('[Binance News] Failed to fetch:', error.message);
+    console.warn('[Binance News] Failed:', error.message);
     return [];
   }
 }
 
-// ─── Fetch crypto news from cryptocurrency.cv ──────────────────
+// ─── Fetch crypto.cv news ──────────────────────────────────────
 async function fetchCryptoNews(symbol) {
   try {
     const categories = {
@@ -63,20 +63,55 @@ async function fetchCryptoNews(symbol) {
     const data = await response.json();
     return data.articles || [];
   } catch (error) {
-    console.warn('[Crypto News] Failed to fetch:', error.message);
+    console.warn('[Crypto News] Failed:', error.message);
     return [];
   }
 }
 
-// ─── Combine news with deduplication ───────────────────────────
+// ─── Fetch Blacknode news ──────────────────────────────────────
+async function fetchBlacknodeNews(symbol) {
+  try {
+    // Map symbol to search query (e.g., BTCUSDT → bitcoin)
+    const queryMap = {
+      'BTCUSDT': 'bitcoin',
+      'ETHUSDT': 'ethereum',
+      'SOLUSDT': 'solana',
+      'BNBUSDT': 'binancecoin',
+    };
+    const q = queryMap[symbol] || 'cryptocurrency';
+    const category = 'technology'; // or 'cryptocurrency' – you can adjust
+    const limit = 10;
+    const url = `${BLACKNODE_NEWS_API}?q=${q}&category=${category}&limit=${limit}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Blacknode news error: ${response.status}`);
+    const data = await response.json();
+    // Assume the response is an array of articles with title, description, source, url, publishedAt
+    // If it's nested, adjust accordingly.
+    const articles = data.articles || data.data || data.results || [];
+    if (!Array.isArray(articles)) throw new Error('Unexpected response format');
+    return articles.map(a => ({
+      title: a.title || '',
+      description: a.description || a.content || '',
+      source: a.source || 'Blacknode',
+      url: a.url || a.link || '',
+      publishedAt: a.publishedAt || a.date || a.timestamp || new Date().toISOString(),
+    }));
+  } catch (error) {
+    console.warn('[Blacknode News] Failed:', error.message);
+    return [];
+  }
+}
+
+// ─── Combine all news with deduplication ────────────────────────────
 async function fetchCombinedNews(symbol) {
-  const [binanceNews, cryptoNews] = await Promise.all([
+  const [binanceNews, cryptoNews, blacknodeNews] = await Promise.all([
     fetchBinanceNews(symbol),
     fetchCryptoNews(symbol),
+    fetchBlacknodeNews(symbol),
   ]);
-  // Use titles to deduplicate (case‑insensitive)
+  const all = [...binanceNews, ...cryptoNews, ...blacknodeNews];
+  // Deduplicate by title (case‑insensitive)
   const seen = new Set();
-  const all = [...binanceNews, ...cryptoNews];
   const unique = all.filter(item => {
     const key = (item.title || '').toLowerCase().trim();
     if (seen.has(key)) return false;
@@ -136,7 +171,7 @@ async function getAIAnalysis(email, symbol, price, closes) {
       return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥20 candles)' };
     }
 
-    // 2. Fetch combined news
+    // 2. Fetch combined news (Binance + Crypto.cv + Blacknode)
     const newsArticles = await fetchCombinedNews(symbol);
     const newsText = formatNewsForPrompt(newsArticles);
 
@@ -145,7 +180,6 @@ async function getAIAnalysis(email, symbol, price, closes) {
       return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
 
-    // Sanitize all values
     const rsi = safeNumber(ind.rsi);
     const macd = safeNumber(ind.macd);
     const ema20 = safeNumber(ind.ema20);
@@ -159,7 +193,7 @@ async function getAIAnalysis(email, symbol, price, closes) {
     const avgVolume = data.volumes && data.volumes.length > 0 ? data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length : 0;
 
     // ─── Step 1: DeepSeek Research (Technical + Combined News) ──
-    const researchPrompt = `You are a senior market analyst. Perform a deep research on the following cryptocurrency market data and recent news (including Binance-specific news).
+    const researchPrompt = `You are a senior market analyst. Perform a deep research on the following cryptocurrency market data and recent news (Binance, Crypto.cv, Blacknode).
 
 === MARKET DATA ===
 Symbol: ${symbol}
@@ -182,7 +216,7 @@ Market Structure:
 - Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
 - Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
 
-=== RECENT CRYPTO NEWS (Binance + General) ===
+=== RECENT CRYPTO NEWS (Binance + Crypto.cv + Blacknode) ===
 ${newsText}
 
 === RESEARCH TASK ===
@@ -192,7 +226,7 @@ Provide a comprehensive research summary covering:
 3. Volatility and risk.
 4. Volume analysis.
 5. Key support/resistance levels.
-6. How recent news events (especially Binance-related) may impact price.
+6. How recent news events may impact price (sentiment analysis).
 7. Potential breakout or reversal scenarios.
 8. Any other relevant observations.
 
@@ -234,7 +268,7 @@ Volume: ${volume}
 Avg Volume: ${avgVolume.toFixed(2)}
 Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
 Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
-Recent News: ${newsArticles.length} articles (including Binance news)
+Recent News: ${newsArticles.length} articles (Binance, Crypto.cv, Blacknode)
 
 === RISK RULES ===
 - Never recommend a trade with Risk:Reward below 1:2.
@@ -281,7 +315,6 @@ Return ONLY valid JSON:
       };
     }
 
-    // ─── Parse GLM response ──────────────────────────────────────
     let ai;
     try {
       const jsonMatch = decisionResult.content.match(/\{[\s\S]*\}/);
@@ -297,7 +330,6 @@ Return ONLY valid JSON:
 
     const confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 0));
 
-    // ─── Reject if too close to S/R ──────────────────────────────
     const support = Math.min(...data.closes) * 0.99;
     const resistance = Math.max(...data.closes) * 1.01;
     if (ai.signal === 'BUY' && Math.abs(resistance - currentPrice) / currentPrice < 0.01) {
@@ -329,7 +361,7 @@ Return ONLY valid JSON:
       pros: Array.isArray(ai.pros) ? ai.pros : [],
       cons: Array.isArray(ai.cons) ? ai.cons : [],
       indicator_scores: ai.indicator_scores || {},
-      news_articles: newsArticles,      // Binance + crypto news combined
+      news_articles: newsArticles,      // all three sources combined
       research_summary: researchSummary || null,
       research_error: researchError,
       reasoning: decisionResult.reasoning || null,
