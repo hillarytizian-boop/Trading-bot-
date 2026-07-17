@@ -121,22 +121,14 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
 
-// ─── WebSocket server (attached to the same HTTP server) ──────────
+// ─── WebSocket server (simpler approach) ──────────────────────────
 const WebSocket = require('ws');
 const { instance } = require('./binanceData');
 const marketData = require('./marketData');
 
-const wss = new WebSocket.Server({ noServer: true });
-
-server.on('upgrade', (request, socket, head) => {
-  // Only upgrade if the path is /ws
-  if (request.url === '/ws') {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  } else {
-    socket.destroy();
-  }
+const wss = new WebSocket.Server({ 
+  server, 
+  path: '/ws' 
 });
 
 wss.on('connection', (ws) => {
