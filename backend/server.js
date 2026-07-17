@@ -1,4 +1,4 @@
-// ─── Global fetch polyfill (Node 18+ has native fetch) ─────────────
+// ─── Global fetch polyfill ──────────────────────────────────────────
 // const fetch = require('node-fetch');
 // global.fetch = fetch;
 
@@ -10,6 +10,16 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
+
+// ─── Global uncaught exception handler ────────────────────────────
+process.on('uncaughtException', (err) => {
+  console.error('🔥 Uncaught Exception:', err.message, err.stack);
+  // Keep the server running
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🔥 Unhandled Rejection:', reason);
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,7 +42,6 @@ app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// ─── Supabase client ──────────────────────────────────────────────
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
@@ -41,8 +50,6 @@ const supabase = createClient(
 // ─── Authentication middleware ────────────────────────────────────
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
-
-  // 1. JWT token
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
     try {
@@ -56,26 +63,18 @@ async function authenticate(req, res, next) {
       console.warn('[AUTH] JWT verification failed');
     }
   }
-
-  // 2. Email fallback (only if enabled)
   const email = req.body?.email || req.query?.email;
   if (email && process.env.ALLOW_EMAIL_FALLBACK === 'true') {
     req.user = { email, id: email };
-    console.log(`[AUTH] Fallback (demo) email: ${email}`);
+    console.log(`[AUTH] Fallback email: ${email}`);
     return next();
   }
-
-  // 3. No valid auth
   return res.status(401).json({ error: 'Authentication required' });
 }
 
-// ─── Public endpoint ──────────────────────────────────────────────
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
-
-// ─── Protect all other /api routes ──────────────────────────────
 app.use('/api', authenticate);
 
-// ─── Safe route loader ─────────────────────────────────────────────
 function safeRequire(routePath) {
   try {
     const module = require(routePath);
@@ -104,7 +103,6 @@ app.use('/api/user', safeRequire('./routes/user.js'));
 app.use('/api/trade', safeRequire('./routes/trade.js'));
 console.log('✅ Routes mounted');
 
-// ─── Serve static frontend ──────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
 if (!fs.existsSync(distPath)) {
   console.warn('⚠️ Frontend build not found. Run `npm run build` in frontend-react');
@@ -112,7 +110,6 @@ if (!fs.existsSync(distPath)) {
   app.use(express.static(distPath));
 }
 
-// ─── Catch‑all for SPA ──────────────────────────────────────────
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
     return res.status(404).json({ error: 'API route not found' });
@@ -124,21 +121,12 @@ app.use((req, res) => {
   }
 });
 
-// ─── Global error handler ────────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error('🔥 Unhandled error:', err);
+  console.error('🔥 Global error handler:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ─── Graceful shutdown ────────────────────────────────────────────
-process.on('SIGINT', () => {
-  console.log('🔻 Shutting down gracefully...');
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  console.log('🔻 Stopping server...');
-  process.exit(0);
-});
+process.on('SIGINT', () => { console.log('🔻 Shutting down...'); process.exit(0); });
+process.on('SIGTERM', () => { console.log('🔻 Stopping server...'); process.exit(0); });
 
-// ─── Start server ──────────────────────────────────────────────────
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
