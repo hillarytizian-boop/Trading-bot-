@@ -1,7 +1,4 @@
-// ─── Global fetch polyfill ──────────────────────────────────────────
-// const fetch = require('node-fetch');
-// global.fetch = fetch;
-
+const domain = require('domain');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -11,12 +8,11 @@ const morgan = require('morgan');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 
-// ─── Global uncaught exception handler ────────────────────────────
+// ─── Global handlers ──────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
-  console.error('🔥 Uncaught Exception:', err.message, err.stack);
-  // Keep the server running
+  console.error('🔥 Uncaught Exception:', err.stack);
+  // Do NOT exit – keep server alive
 });
-
 process.on('unhandledRejection', (reason, promise) => {
   console.error('🔥 Unhandled Rejection:', reason);
 });
@@ -24,16 +20,15 @@ process.on('unhandledRejection', (reason, promise) => {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Validate required environment variables ──────────────────────
+// ─── Validate env ──────────────────────────────────────────────────
 const requiredEnv = ['SUPABASE_URL', 'SUPABASE_ANON_KEY'];
 for (const key of requiredEnv) {
   if (!process.env[key]) {
-    console.error(`❌ Missing environment variable: ${key}`);
+    console.error(`❌ Missing ${key}`);
     process.exit(1);
   }
 }
 
-// ─── Security & logging middleware ────────────────────────────────
 app.use(helmet());
 app.use(morgan('combined'));
 app.set('trust proxy', 1);
@@ -47,7 +42,7 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// ─── Authentication middleware ────────────────────────────────────
+// ─── Authentication ──────────────────────────────────────────────
 async function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -56,17 +51,13 @@ async function authenticate(req, res, next) {
       const { data: { user }, error } = await supabase.auth.getUser(token);
       if (!error && user) {
         req.user = user;
-        console.log(`[AUTH] JWT user: ${user.email}`);
         return next();
       }
-    } catch (e) {
-      console.warn('[AUTH] JWT verification failed');
-    }
+    } catch (e) { /* ignore */ }
   }
   const email = req.body?.email || req.query?.email;
   if (email && process.env.ALLOW_EMAIL_FALLBACK === 'true') {
     req.user = { email, id: email };
-    console.log(`[AUTH] Fallback email: ${email}`);
     return next();
   }
   return res.status(401).json({ error: 'Authentication required' });
@@ -75,18 +66,17 @@ async function authenticate(req, res, next) {
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 app.use('/api', authenticate);
 
+// ─── Safe route loader ────────────────────────────────────────────
 function safeRequire(routePath) {
   try {
     const module = require(routePath);
     if (typeof module === 'function') return module;
     if (module && module.router && typeof module.router === 'function') return module.router;
     if (module && typeof module === 'object' && module.router) return module.router;
-    console.warn(`⚠️ ${routePath} does not export a valid router, using fallback`);
     return (req, res) => res.status(501).json({ error: `${routePath} not properly implemented` });
   } catch (e) {
     console.error(`❌ Failed to load ${routePath}:`, e.message);
-    console.error(e.stack);
-    return (req, res) => res.status(501).json({ error: `${routePath} not available: ${e.message}` });
+    return (req, res) => res.status(501).json({ error: `${routePath} not available` });
   }
 }
 
@@ -103,12 +93,9 @@ app.use('/api/user', safeRequire('./routes/user.js'));
 app.use('/api/trade', safeRequire('./routes/trade.js'));
 console.log('✅ Routes mounted');
 
+// ─── Serve frontend ──────────────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
-if (!fs.existsSync(distPath)) {
-  console.warn('⚠️ Frontend build not found. Run `npm run build` in frontend-react');
-} else {
-  app.use(express.static(distPath));
-}
+if (fs.existsSync(distPath)) app.use(express.static(distPath));
 
 app.use((req, res) => {
   if (req.path.startsWith('/api')) {
@@ -117,16 +104,17 @@ app.use((req, res) => {
   if (fs.existsSync(distPath)) {
     res.sendFile(path.join(distPath, 'index.html'));
   } else {
-    res.status(404).send('Frontend not built – run `npm run build`');
+    res.status(404).send('Frontend not built');
   }
 });
 
+// ─── Global error handler ────────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error('🔥 Global error handler:', err);
+  console.error('🔥 Global error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-process.on('SIGINT', () => { console.log('🔻 Shutting down...'); process.exit(0); });
-process.on('SIGTERM', () => { console.log('🔻 Stopping server...'); process.exit(0); });
+process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));
 
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
