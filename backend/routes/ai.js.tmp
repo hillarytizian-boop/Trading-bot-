@@ -1,0 +1,14 @@
+// ─── This is a patch – we'll replace the function ────────────────
+function computeExtraIndicators(closes) {
+  if (!closes || closes.length === 0) {
+    return { ema20: 0, ema50: 0, ema200: 0 };
+  }
+  const ema20 = EMA.calculate({ period: 20, values: closes });
+  const ema50 = EMA.calculate({ period: 50, values: closes });
+  const ema200 = EMA.calculate({ period: 200, values: closes });
+  return {
+    ema20: ema20 && ema20.length > 0 ? ema20[ema20.length-1] : closes[closes.length-1] || 0,
+    ema50: ema50 && ema50.length > 0 ? ema50[ema50.length-1] : closes[closes.length-1] || 0,
+    ema200: ema200 && ema200.length > 0 ? ema200[ema200.length-1] : closes[closes.length-1] || 0,
+  };
+}

@@ -1,8 +1,5 @@
 const fetch = require('node-fetch');
-const HttpsProxyAgent = require('https-proxy-agent');
-
-const PROXY_URL = 'http://qsbykpgrqjh5:n0gsca0jpuzio8h@209.50.183.159:3129';
-const agent = new HttpsProxyAgent(PROXY_URL);
+const marketData = require('./marketData');
 
 class DataFetcher {
   constructor() {
@@ -17,81 +14,69 @@ class DataFetcher {
     };
   }
 
-  async _binanceFetch(url) {
-    const endpoints = ['https://api.binance.com', 'https://api1.binance.com'];
-    for (const base of endpoints) {
-      try {
-        const res = await fetch(base + url, { agent, timeout: 5000 });
-        if (res.ok) return await res.json();
-      } catch (e) {
-        console.warn(`[Binance] ${base} via proxy failed:`, e.message);
-      }
-    }
-    throw new Error('All Binance endpoints failed via proxy');
-  }
-
-  async _coingeckoFetch(symbol) {
-    const id = this.coingeckoIds[symbol];
-    if (!id) throw new Error(`Unknown symbol: ${symbol}`);
-    const priceUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd`;
-    const priceRes = await fetch(priceUrl);
-    const priceData = await priceRes.json();
-    const price = priceData[id]?.usd;
-    if (!price) throw new Error('Price not found');
-    const now = Math.floor(Date.now() / 1000);
-    const from = now - 50 * 300;
-    const histUrl = `https://api.coingecko.com/api/v3/coins/${id}/market_chart/range?vs_currency=usd&from=${from}&to=${now}`;
-    const histRes = await fetch(histUrl);
-    const histData = await histRes.json();
-    if (!histData.prices) throw new Error('No historical data');
-    const closes = histData.prices.map(p => p[1]).slice(-50);
-    return { price, closes };
-  }
-
+  // ─── Get price: WebSocket first, fallback to REST ──────────────
   async getPrice(symbol = 'BTCUSDT') {
-    symbol = symbol.replace(/\//g, '');
-    try {
-      const data = await this._binanceFetch(`/api/v3/ticker/price?symbol=${symbol}`);
-      const price = parseFloat(data.price);
-      this.priceCache[symbol] = price;
-      return price;
-    } catch (e) {
-      console.warn(`[Data] Binance price via proxy failed, using CoinGecko`);
-      const { price } = await this._coingeckoFetch(symbol);
-      this.priceCache[symbol] = price;
-      return price;
+    symbol = symbol.replace('/', '');
+    // Try WebSocket first
+    const wsPrice = marketData.getPrice(symbol);
+    if (wsPrice !== null && wsPrice > 0) {
+      this.priceCache[symbol] = wsPrice;
+      return wsPrice;
     }
+    // Fallback: REST
+    try {
+      const url = `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const price = parseFloat(data.price);
+      if (price > 0) {
+        this.priceCache[symbol] = price;
+        return price;
+      }
+    } catch (e) {
+      console.warn(`[Binance] REST price fallback failed: ${e.message}`);
+    }
+    return this.priceCache[symbol] || 0;
   }
 
-  async getCandles(symbol = 'BTCUSDT', limit = 50) {
-    symbol = symbol.replace(/\//g, '');
+  // ─── Get candles: WebSocket first, fallback to REST ──────────────
+  async getCandles(symbol = 'BTCUSDT', interval = '1m', limit = 50) {
+    symbol = symbol.replace('/', '');
+    // Try WebSocket
+    const wsCandles = marketData.getCandles(symbol);
+    if (wsCandles && wsCandles.length >= limit) {
+      // We have enough candles from WebSocket
+      return wsCandles.slice(-limit);
+    }
+    // Fallback to REST (Binance)
     try {
-      const data = await this._binanceFetch(`/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`);
+      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=${limit}`;
+      const res = await fetch(url);
+      const data = await res.json();
       if (Array.isArray(data) && data.length > 0) {
         const closes = data.map(c => parseFloat(c[4]));
-        this.historyCache[symbol] = { closes };
-        return this.historyCache[symbol];
+        return closes;
       }
-      throw new Error('Invalid Binance candles');
     } catch (e) {
-      console.warn(`[Data] Binance candles via proxy failed, using CoinGecko (5-min)`);
-      const { closes } = await this._coingeckoFetch(symbol);
-      this.historyCache[symbol] = { closes };
-      return this.historyCache[symbol];
+      console.warn(`[Binance] REST candles fallback failed: ${e.message}`);
     }
+    // If still nothing, return whatever we have
+    return wsCandles || [];
   }
 
+  // ─── Get analysis data ──────────────────────────────────────────
   async getAnalysisData(symbol = 'BTCUSDT') {
-    symbol = symbol.replace(/\//g, '');
+    symbol = symbol.replace('/', '');
     const price = await this.getPrice(symbol);
-    const history = await this.getCandles(symbol);
+    const closes = await this.getCandles(symbol);
     return {
       symbol,
       price,
-      closes: history?.closes || [],
+      closes,
     };
   }
 
+  // ─── Indicators (unchanged) ──────────────────────────────────────
   calculateIndicators(closes) {
     if (!closes || closes.length < 14) return null;
     let gains = 0, losses = 0;
@@ -126,7 +111,14 @@ class DataFetcher {
     const typical = closes.map((c, i) => (c + (closes[i] || c) + (closes[i] || c)) / 3);
     const vwap = typical.reduce((a,b) => a+b, 0) / typical.length;
     return {
-      rsi, macd, ema20, ema50, atr, bbUpper, bbLower, vwap,
+      rsi,
+      macd,
+      ema20,
+      ema50,
+      atr,
+      bbUpper,
+      bbLower,
+      vwap,
       adx: 25,
       currentPrice: closes[closes.length-1],
     };
@@ -134,13 +126,4 @@ class DataFetcher {
 }
 
 const instance = new DataFetcher();
-async function updateAllPrices() {
-  for (const symbol of instance.symbols) {
-    try { await instance.getPrice(symbol); await instance.getCandles(symbol); } catch (e) {}
-  }
-}
-if (process.env.NODE_ENV !== 'test') {
-  setInterval(updateAllPrices, 60000);
-  setTimeout(updateAllPrices, 1000);
-}
-module.exports = { DataFetcher, instance, updateAllPrices };
+module.exports = { DataFetcher, instance };

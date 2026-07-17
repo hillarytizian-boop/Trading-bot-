@@ -118,3 +118,56 @@ process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
 
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+// ─── WebSocket server for price streaming ──────────────────────────
+const WebSocket = require('ws');
+const { instance } = require('./binanceData');
+
+const wss = new WebSocket.Server({ path: '/ws', noServer: true });
+
+// Upgrade HTTP to WebSocket
+app.on('upgrade', (request, socket, head) => {
+  if (request.url === '/ws') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+wss.on('connection', (ws) => {
+  console.log('[WS] Frontend connected');
+  ws.on('close', () => console.log('[WS] Frontend disconnected'));
+});
+
+// ─── Broadcast price updates every 2 seconds ──────────────────────
+let lastPrice = null;
+let lastCandles = [];
+
+async function broadcastPrice() {
+  try {
+    const data = await instance.getAnalysisData('BTCUSDT');
+    const price = data.price;
+    const candles = data.closes;
+    if (price && price !== lastPrice) {
+      lastPrice = price;
+      lastCandles = candles;
+      const message = JSON.stringify({ price, candles: candles.slice(-50) });
+      wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(message);
+        }
+      });
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+// Run every 2 seconds
+setInterval(broadcastPrice, 2000);
+
+// ─── Start WebSocket market data subscriptions ────────────────────
+const marketData = require('./marketData');
+marketData.start(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']);
