@@ -61,7 +61,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
     setStatus('connecting');
     try {
-      const res = await fetch(`${API_BASE_URL}/api/binance/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
+      const res = await fetch(`${API_BASE_URL}/api/binance/connect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
       const data = await res.json();
       if (res.ok) {
         setStatus('connected');
