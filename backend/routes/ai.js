@@ -14,98 +14,28 @@ try {
   console.error('[AI] OpenAI init error:', e.message);
 }
 
-const RESEARCH_MODEL = 'deepseek-ai/deepseek-v4-flash';
-const DECISION_MODEL = 'z-ai/glm-5.2';
-
-// ─── Helper: OpenAI call with one retry ──────────────────────────
-async function openaiCall(model, messages, opts = {}, timeoutMs = 8000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  const attempt = async (tryNum) => {
-    try {
-      const result = await nvidiaClient.chat.completions.create(
-        { model, messages, ...opts },
-        { signal: controller.signal }
-      );
-      clearTimeout(timeoutId);
-      return result;
-    } catch (err) {
-      if (tryNum === 1) {
-        console.warn(`[AI] ${model} attempt 1 failed:`, err.message);
-        // One retry
-        await new Promise(r => setTimeout(r, 1000));
-        try {
-          const result = await nvidiaClient.chat.completions.create(
-            { model, messages, ...opts },
-            { signal: controller.signal }
-          );
-          clearTimeout(timeoutId);
-          return result;
-        } catch (err2) {
-          clearTimeout(timeoutId);
-          throw err2;
-        }
-      }
-      clearTimeout(timeoutId);
-      throw err;
-    }
-  };
-  return attempt(1);
-}
+const MODEL = 'z-ai/glm-5.2';
 
 function safeNumber(v, fallback = 0) {
   const n = Number(v);
   return isNaN(n) ? fallback : n;
 }
 
-// ─── Rule‑based fallback (no AI) ──────────────────────────────────
-function ruleBasedSignal(ind, currentPrice, extra) {
-  let score = 0;
-  const reasons = [];
-  const { rsi, macd, ema20, ema50 } = ind;
-
-  if (rsi < 30) { score += 2; reasons.push('RSI oversold'); }
-  else if (rsi > 70) { score -= 2; reasons.push('RSI overbought'); }
-  else if (rsi < 45) { score += 1; reasons.push('RSI low'); }
-  else if (rsi > 55) { score -= 1; reasons.push('RSI high'); }
-
-  if (macd > 0) { score += 1; reasons.push('MACD positive'); }
-  else if (macd < 0) { score -= 1; reasons.push('MACD negative'); }
-
-  if (currentPrice > ema20 && ema20 > ema50) { score += 1; reasons.push('Uptrend'); }
-  else if (currentPrice < ema20 && ema20 < ema50) { score -= 1; reasons.push('Downtrend'); }
-
-  let signal = 'HOLD';
-  let confidence = 30;
-  if (score >= 2) { signal = 'BUY'; confidence = 60 + score * 5; }
-  else if (score <= -2) { signal = 'SELL'; confidence = 60 + Math.abs(score) * 5; }
-  else { signal = 'HOLD'; confidence = 30 + Math.abs(score) * 5; }
-  confidence = Math.min(100, Math.max(0, confidence));
-  if (confidence < 75) signal = 'HOLD';
-
-  return {
-    signal,
-    confidence,
-    reason: `Rule‑based: ${reasons.join(', ')}`,
-    trend: score > 0 ? 'Bullish' : score < 0 ? 'Bearish' : 'Sideways',
-    market_regime: 'Ranging',
-  };
-}
-
-// ─── Main analysis ──────────────────────────────────────────────────
+// ─── Pure AI – no fallback ──────────────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
-  const start = Date.now();
-
   try {
-    console.log('[AI] Fetching market data...');
     const data = await instance.getAnalysisData(symbol);
-    if (!data || !data.closes || data.closes.length < 20) {
-      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient market data' };
+    let priceData = closes && closes.length > 0 ? closes : data.closes;
+
+    if (!priceData || priceData.length < 14) {
+      return {
+        signal: 'HOLD',
+        confidence: 0,
+        reason: 'Insufficient market data (need ≥14 candles)',
+      };
     }
 
-    console.log('[AI] Calculating indicators...');
-    const ind = instance.calculateIndicators(data.closes);
+    const ind = instance.calculateIndicators(priceData);
     if (!ind) {
       return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
@@ -120,92 +50,63 @@ async function getAIAnalysis(email, symbol, price, closes) {
     const bbLower = safeNumber(ind.bbLower);
     const currentPrice = price || data.price || ind.currentPrice || 0;
 
-    // ─── Attempt AI decision (only if NVIDIA client exists) ──────
-    let aiResult = null;
-    if (nvidiaClient) {
-      try {
-        console.log('[AI] Calling GLM for decision...');
-        const prompt = `Analyze ${symbol} at $${currentPrice}.
+    // ─── NVIDIA AI only ──────────────────────────────────────────────
+    if (!nvidiaClient) {
+      return { signal: 'HOLD', confidence: 0, reason: 'NVIDIA client not initialized' };
+    }
+
+    const prompt = `Analyze ${symbol} at $${currentPrice.toFixed(2)}.
 RSI: ${rsi.toFixed(2)}, MACD: ${macd.toFixed(4)}
 EMA20: ${ema20.toFixed(2)}, EMA50: ${ema50.toFixed(2)}, EMA200: ${ema200.toFixed(2)}
 ATR: ${atr.toFixed(4)}, BB Upper: ${bbUpper.toFixed(2)}, BB Lower: ${bbLower.toFixed(2)}
 Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
 
-        const decision = await openaiCall(
-          DECISION_MODEL,
-          [{ role: 'user', content: prompt }],
-          { temperature: 0.4, max_tokens: 300 },
-          8000 // 8s timeout
-        );
+    const decision = await nvidiaClient.chat.completions.create({
+      model: MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4,
+      max_tokens: 300,
+      timeout: 8000,
+    });
 
-        const content = decision.choices[0].message.content;
-        const match = content.match(/\{[\s\S]*\}/);
-        if (match) {
-          const parsed = JSON.parse(match[0]);
-          aiResult = {
-            signal: parsed.signal || 'HOLD',
-            confidence: Math.min(100, Math.max(0, Number(parsed.confidence) || 0)),
-            reason: parsed.reason || 'AI decision',
-            trend: parsed.trend || 'Sideways',
-            market_regime: parsed.market_regime || 'Ranging',
-          };
-          console.log('[AI] GLM decision:', aiResult.signal, aiResult.confidence);
-        }
-      } catch (e) {
-        console.warn('[AI] GLM failed:', e.message);
-      }
-    }
+    const content = decision.choices[0].message.content;
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('No JSON returned from NVIDIA');
 
-    // ─── If AI succeeded and confidence ≥ 75, use it ──────────────
-    if (aiResult && aiResult.confidence >= 75) {
-      return {
-        signal: aiResult.signal,
-        confidence: aiResult.confidence,
-        trend: aiResult.trend || 'Sideways',
-        market_regime: aiResult.market_regime || 'Ranging',
-        entry_price: currentPrice,
-        stop_loss: 0,
-        take_profit: 0,
-        risk_reward: '1:1',
-        expected_move_percent: 0,
-        trade_duration: 'Intraday',
-        reason: aiResult.reason || 'AI signal',
-        pros: [],
-        cons: [],
-        indicator_scores: {},
-        data: { price: currentPrice, rsi, macd, ema20, ema50, ema200, atr },
-      };
-    }
+    const parsed = JSON.parse(match[0]);
+    const signal = parsed.signal || 'HOLD';
+    const confidence = Math.min(100, Math.max(0, Number(parsed.confidence) || 0));
+    const reason = parsed.reason || 'AI decision';
 
-    // ─── Fallback: rule‑based signal ──────────────────────────────
-    console.log('[AI] Using rule‑based fallback');
-    const fallback = ruleBasedSignal(ind, currentPrice, { ema20, ema50 });
+    // Enforce confidence threshold (no fallback)
+    const finalSignal = confidence >= 75 ? signal : 'HOLD';
+    const finalReason = confidence < 75 ? `${reason} (confidence ${confidence}% < 75%)` : reason;
+
     return {
-      signal: fallback.signal,
-      confidence: fallback.confidence,
-      trend: fallback.trend,
-      market_regime: fallback.market_regime,
+      signal: finalSignal,
+      confidence: confidence,
+      trend: parsed.trend || 'Sideways',
+      market_regime: parsed.market_regime || 'Ranging',
       entry_price: currentPrice,
       stop_loss: 0,
       take_profit: 0,
       risk_reward: '1:1',
       expected_move_percent: 0,
       trade_duration: 'Intraday',
-      reason: fallback.reason + (aiResult ? ' (AI unavailable)' : ''),
+      reason: finalReason,
       pros: [],
       cons: [],
       indicator_scores: {},
       data: { price: currentPrice, rsi, macd, ema20, ema50, ema200, atr },
     };
   } catch (error) {
-    console.error('[AI] Fatal error:', error.message);
+    console.error('[AI] Error:', error.message);
+    // No fallback – return HOLD with error
     return {
       signal: 'HOLD',
       confidence: 0,
-      reason: `Error: ${error.message}`,
+      reason: `NVIDIA AI error: ${error.message}`,
     };
-  } finally {
-    console.log(`[AI] Total time: ${Date.now() - start}ms`);
   }
 }
 
@@ -218,7 +119,10 @@ router.post('/analyze', async (req, res) => {
 
   const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), 12000));
   try {
-    const result = await Promise.race([getAIAnalysis(email, symbol, null, null), timeout]);
+    const result = await Promise.race([
+      getAIAnalysis(email, symbol, null, req.body.closes || null),
+      timeout,
+    ]);
     res.json(result);
   } catch (error) {
     console.error('[AI] Route error:', error.message);
