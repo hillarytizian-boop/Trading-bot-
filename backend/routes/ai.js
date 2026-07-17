@@ -3,7 +3,7 @@ global.WebSocket = require('ws');
 const router = require('express').Router();
 const OpenAI = require('openai');
 const { instance } = require('../binanceData');
-const { EMA } = require('technicalindicators');
+const { EMA, ADX } = require('technicalindicators');
 
 const nvidiaClient = new OpenAI({
   baseURL: 'https://integrate.api.nvidia.com/v1',
@@ -11,6 +11,12 @@ const nvidiaClient = new OpenAI({
 });
 
 const MODEL = 'deepseek-ai/deepseek-v4-pro';
+
+// ─── Safe number helper ──────────────────────────────────────────
+function safeNumber(value, fallback = 0) {
+  const num = Number(value);
+  return isNaN(num) ? fallback : num;
+}
 
 async function queryNvidiaModel(prompt) {
   const messages = [{ role: 'user', content: prompt }];
@@ -57,82 +63,94 @@ async function queryNvidiaModel(prompt) {
   throw lastError || new Error('All NVIDIA attempts failed');
 }
 
-function computeExtraIndicators(closes, highs, lows, volumes) {
-  const avgVolume = volumes && volumes.length > 0 ? volumes.reduce((a, b) => a + b, 0) / volumes.length : 0;
-  const currentVolume = volumes && volumes.length > 0 ? volumes[volumes.length - 1] : 0;
-  const high = Math.max(...closes);
-  const low = Math.min(...closes);
-  const support = low * 0.99;
-  const resistance = high * 1.01;
-
-  const ema20 = EMA.calculate({ period: 20, values: closes }).at(-1);
-  const ema50 = EMA.calculate({ period: 50, values: closes }).at(-1);
-  const ema200 = EMA.calculate({ period: 200, values: closes }).at(-1);
-
-  const bullish = ema20 > ema50 && ema50 > ema200;
-  const bearish = ema20 < ema50 && ema50 < ema200;
-  const trend = bullish ? 'Bullish' : bearish ? 'Bearish' : 'Sideways';
-
-  const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
-  const highVolume = volumeRatio > 1.5;
-
+// ─── Compute EMAs with fallback ──────────────────────────────────
+function computeExtraIndicators(closes) {
+  if (!closes || closes.length === 0) {
+    return { ema20: 0, ema50: 0, ema200: 0 };
+  }
+  const lastClose = closes[closes.length-1] || 0;
+  let ema20 = lastClose, ema50 = lastClose, ema200 = lastClose;
+  try {
+    if (closes.length >= 20) {
+      const e20 = EMA.calculate({ period: 20, values: closes });
+      if (e20 && e20.length > 0) ema20 = e20[e20.length-1];
+    }
+    if (closes.length >= 50) {
+      const e50 = EMA.calculate({ period: 50, values: closes });
+      if (e50 && e50.length > 0) ema50 = e50[e50.length-1];
+    }
+    if (closes.length >= 200) {
+      const e200 = EMA.calculate({ period: 200, values: closes });
+      if (e200 && e200.length > 0) ema200 = e200[e200.length-1];
+    }
+  } catch (e) {
+    console.warn('[AI] EMA calculation failed, using fallback');
+  }
   return {
-    avgVolume,
-    currentVolume,
-    high,
-    low,
-    support,
-    resistance,
-    trend,
-    ema20,
-    ema50,
-    ema200,
-    bullish,
-    bearish,
-    volumeRatio,
-    highVolume,
-    trend1m: trend,
-    trend5m: trend,
-    trend15m: trend,
-    trend1h: trend,
+    ema20: safeNumber(ema20, lastClose),
+    ema50: safeNumber(ema50, lastClose),
+    ema200: safeNumber(ema200, lastClose),
   };
 }
 
-const MIN_ADX = 20;
+// ─── Compute ADX with fallback ──────────────────────────────────
+function computeADX(closes) {
+  if (!closes || closes.length < 14) return 25;
+  try {
+    const adx = ADX.calculate({
+      high: closes.map(c => c * 1.001),
+      low: closes.map(c => c * 0.999),
+      close: closes,
+      period: 14
+    });
+    if (adx && adx.length > 0) {
+      const val = adx[adx.length-1];
+      return safeNumber(val, 25);
+    }
+    return 25;
+  } catch {
+    return 25;
+  }
+}
 
+// ─── Main AI analysis function ──────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
   try {
     const data = await instance.getAnalysisData(symbol);
-    if (!data || !data.closes || data.closes.length < 50) {
-      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥50 candles)' };
+    if (!data || !data.closes || data.closes.length < 20) {
+      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥20 candles)' };
     }
+
+    // ─── Calculate indicators ──────────────────────────────────────
     const ind = instance.calculateIndicators(data.closes);
-    if (!ind || typeof ind.rsi !== "number" || typeof ind.macd !== "number" || typeof ind.ema20 !== "number" || typeof ind.ema50 !== "number" || typeof ind.atr !== "number") {
-      return { signal: "HOLD", confidence: 0, reason: "Invalid indicator values" };
-    }
     if (!ind) {
       return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
 
-    const extra = computeExtraIndicators(
-      data.closes,
-      data.highs || [],
-      data.lows || [],
-      data.volumes || []
-    );
-    const currentPrice = price || data.price || ind.currentPrice;
+    // ─── Validate all indicator values ──────────────────────────────
+    const rsi = safeNumber(ind.rsi);
+    const macd = safeNumber(ind.macd);
+    const ema20 = safeNumber(ind.ema20);
+    const ema50 = safeNumber(ind.ema50);
+    const atr = safeNumber(ind.atr);
+    const bbUpper = safeNumber(ind.bbUpper);
+    const bbLower = safeNumber(ind.bbLower);
+    const currentPrice = price || data.price || ind.currentPrice || 0;
 
-    const adx = ind.adx || 25;
-    if (adx < MIN_ADX) {
+    // ─── Extra indicators (EMAs) ──────────────────────────────────
+    const extra = computeExtraIndicators(data.closes);
+    const adx = computeADX(data.closes);
+
+    // ─── Reject weak trend ──────────────────────────────────────────
+    if (adx < 20) {
       return {
         signal: 'HOLD',
         confidence: 40,
-        reason: `Weak trend (ADX ${adx.toFixed(1)} < ${MIN_ADX}). Market is ranging.`,
+        reason: `Weak trend (ADX ${adx.toFixed(1)} < 20). Market is ranging.`,
       };
     }
 
-    const { bullish, bearish } = extra;
-
+    // ─── Build prompt (all values guaranteed numbers) ──────────────
     const prompt = `You are an institutional-grade cryptocurrency trading analyst specializing in Binance spot and futures markets.
 
 Your objective is to maximize risk-adjusted returns, not the number of trades.
@@ -140,33 +158,33 @@ Your objective is to maximize risk-adjusted returns, not the number of trades.
 Analyze the following market data:
 
 Market: ${symbol}
-Current Price: $${currentPrice}
+Current Price: $${currentPrice.toFixed(2)}
 
 Technical Indicators
-- RSI(14): ${ind.rsi.toFixed(2)}
-- MACD: ${ind.macd.toFixed(4)}
+- RSI(14): ${rsi.toFixed(2)}
+- MACD: ${macd.toFixed(4)}
 - EMA20: ${extra.ema20.toFixed(2)}
 - EMA50: ${extra.ema50.toFixed(2)}
 - EMA200: ${extra.ema200.toFixed(2)}
-- ATR(14): ${ind.atr.toFixed(4)}
+- ATR(14): ${atr.toFixed(4)}
 - ADX: ${adx.toFixed(2)}
-- Bollinger Upper: ${ind.bbUpper.toFixed(2)}
-- Bollinger Lower: ${ind.bbLower.toFixed(2)}
-- Volume: ${extra.currentVolume}
-- Average Volume: ${extra.avgVolume}
+- Bollinger Upper: ${bbUpper.toFixed(2)}
+- Bollinger Lower: ${bbLower.toFixed(2)}
+- Volume: ${data.volumes?.[data.volumes.length-1] || 0}
+- Average Volume: ${data.volumes ? (data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length).toFixed(2) : 0}
 
 Market Structure
-- Trend: ${extra.trend}
-- Support: $${extra.support.toFixed(2)}
-- Resistance: $${extra.resistance.toFixed(2)}
-- Recent High: $${extra.high.toFixed(2)}
-- Recent Low: $${extra.low.toFixed(2)}
+- Trend: ${extra.ema20 > extra.ema50 && extra.ema50 > extra.ema200 ? 'Bullish' : extra.ema20 < extra.ema50 && extra.ema50 < extra.ema200 ? 'Bearish' : 'Sideways'}
+- Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
+- Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
+- Recent High: ${Math.max(...data.closes).toFixed(2)}
+- Recent Low: ${Math.min(...data.closes).toFixed(2)}
 
 Multi-Timeframe
-- 1m Trend: ${extra.trend1m}
-- 5m Trend: ${extra.trend5m}
-- 15m Trend: ${extra.trend15m}
-- 1h Trend: ${extra.trend1h}
+- 1m Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
+- 5m Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
+- 15m Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
+- 1h Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
 
 Risk Rules
 - Never recommend a trade with Risk:Reward below 1:2.
@@ -205,16 +223,8 @@ Return ONLY valid JSON.
   "expected_move_percent":0,
   "trade_duration":"Scalp|Intraday|Swing",
   "reason":"Detailed explanation using all indicators.",
-  "pros":[
-    "...",
-    "...",
-    "..."
-  ],
-  "cons":[
-    "...",
-    "...",
-    "..."
-  ],
+  "pros":["...","...","..."],
+  "cons":["...","...","..."],
   "indicator_scores":{
     "RSI":0,
     "MACD":0,
@@ -243,17 +253,16 @@ Return only JSON with no markdown or additional text.`;
     }
 
     let ai = result.data;
-
     const confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 0));
 
-    const resistanceDistance = Math.abs(extra.resistance - currentPrice) / currentPrice;
-    const supportDistance = Math.abs(currentPrice - extra.support) / currentPrice;
-
-    if (ai.signal === 'BUY' && resistanceDistance < 0.01) {
+    // ─── Reject if too close to S/R ──────────────────────────────────
+    const support = Math.min(...data.closes) * 0.99;
+    const resistance = Math.max(...data.closes) * 1.01;
+    if (ai.signal === 'BUY' && Math.abs(resistance - currentPrice) / currentPrice < 0.01) {
       ai.signal = 'HOLD';
       ai.reason = (ai.reason || '') + ' Too close to resistance.';
     }
-    if (ai.signal === 'SELL' && supportDistance < 0.01) {
+    if (ai.signal === 'SELL' && Math.abs(currentPrice - support) / currentPrice < 0.01) {
       ai.signal = 'HOLD';
       ai.reason = (ai.reason || '') + ' Too close to support.';
     }
@@ -268,27 +277,25 @@ Return only JSON with no markdown or additional text.`;
       confidence: confidence,
       trend: ai.trend || 'Sideways',
       market_regime: ai.market_regime || 'Ranging',
-      entry_price: ai.entry_price || currentPrice,
-      stop_loss: ai.stop_loss || 0,
-      take_profit: ai.take_profit || 0,
+      entry_price: safeNumber(ai.entry_price, currentPrice),
+      stop_loss: safeNumber(ai.stop_loss, 0),
+      take_profit: safeNumber(ai.take_profit, 0),
       risk_reward: ai.risk_reward || '1:1',
-      expected_move_percent: ai.expected_move_percent || 0,
+      expected_move_percent: safeNumber(ai.expected_move_percent, 0),
       trade_duration: ai.trade_duration || 'Intraday',
       reason: ai.reason || 'No reason provided',
-      pros: ai.pros || [],
-      cons: ai.cons || [],
+      pros: Array.isArray(ai.pros) ? ai.pros : [],
+      cons: Array.isArray(ai.cons) ? ai.cons : [],
       indicator_scores: ai.indicator_scores || {},
       data: {
         price: currentPrice,
-        rsi: ind.rsi,
-        macd: ind.macd,
+        rsi: rsi,
+        macd: macd,
         ema20: extra.ema20,
         ema50: extra.ema50,
         ema200: extra.ema200,
-        atr: ind.atr,
+        atr: atr,
         adx: adx,
-        volumeRatio: extra.volumeRatio,
-        highVolume: extra.highVolume,
       },
     };
   } catch (error) {
@@ -297,6 +304,7 @@ Return only JSON with no markdown or additional text.`;
   }
 }
 
+// ─── HTTP endpoints ──────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
@@ -325,4 +333,3 @@ router.get('/market-data', async (req, res) => {
 });
 
 module.exports = { router, getAIAnalysis };
-// Override computeExtraIndicators with safe fallback
