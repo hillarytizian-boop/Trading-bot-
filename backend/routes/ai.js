@@ -4,6 +4,11 @@ const router = require('express').Router();
 const OpenAI = require('openai');
 const { instance } = require('../binanceData');
 
+// ─── Use the same client as Python script ──────────────────────────
+if (!process.env.NVIDIA_API_KEY) {
+  console.error('[AI] NVIDIA_API_KEY is not set in environment');
+}
+
 let nvidiaClient;
 try {
   nvidiaClient = new OpenAI({
@@ -14,14 +19,18 @@ try {
   console.error('[AI] OpenAI init error:', e.message);
 }
 
+// ─── Exactly the same model and parameters ─────────────────────────
 const MODEL = 'z-ai/glm-5.2';
+const TEMPERATURE = 1;
+const TOP_P = 1;
+const MAX_TOKENS = 16384;
+const SEED = 42;
 
 function safeNumber(v, fallback = 0) {
   const n = Number(v);
   return isNaN(n) ? fallback : n;
 }
 
-// ─── Pure AI – no fallback ──────────────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
   try {
     const data = await instance.getAnalysisData(symbol);
@@ -50,23 +59,28 @@ async function getAIAnalysis(email, symbol, price, closes) {
     const bbLower = safeNumber(ind.bbLower);
     const currentPrice = price || data.price || ind.currentPrice || 0;
 
-    // ─── NVIDIA AI only ──────────────────────────────────────────────
     if (!nvidiaClient) {
       return { signal: 'HOLD', confidence: 0, reason: 'NVIDIA client not initialized' };
     }
 
+    // ─── Build prompt (same style as before, but we can keep it) ──
     const prompt = `Analyze ${symbol} at $${currentPrice.toFixed(2)}.
 RSI: ${rsi.toFixed(2)}, MACD: ${macd.toFixed(4)}
 EMA20: ${ema20.toFixed(2)}, EMA50: ${ema50.toFixed(2)}, EMA200: ${ema200.toFixed(2)}
 ATR: ${atr.toFixed(4)}, BB Upper: ${bbUpper.toFixed(2)}, BB Lower: ${bbLower.toFixed(2)}
 Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
 
+    console.log('[AI] Sending request to NVIDIA with model:', MODEL);
+
+    // ─── Exactly the same parameters as Python script ──────────────
     const decision = await nvidiaClient.chat.completions.create({
       model: MODEL,
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.4,
-      max_tokens: 300,
-      timeout: 8000,
+      temperature: TEMPERATURE,
+      top_p: TOP_P,
+      max_tokens: MAX_TOKENS,
+      seed: SEED,
+      stream: false, // we don't stream for simplicity, but you can enable if needed
     });
 
     const content = decision.choices[0].message.content;
@@ -78,7 +92,6 @@ Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
     const confidence = Math.min(100, Math.max(0, Number(parsed.confidence) || 0));
     const reason = parsed.reason || 'AI decision';
 
-    // Enforce confidence threshold (no fallback)
     const finalSignal = confidence >= 75 ? signal : 'HOLD';
     const finalReason = confidence < 75 ? `${reason} (confidence ${confidence}% < 75%)` : reason;
 
@@ -101,11 +114,20 @@ Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
     };
   } catch (error) {
     console.error('[AI] Error:', error.message);
-    // No fallback – return HOLD with error
+    // Try to extract more info from the error
+    let errorDetail = error.message;
+    if (error.response && error.response.data) {
+      try {
+        const body = await error.response.data.text();
+        errorDetail += ` - Response body: ${body}`;
+      } catch (e) {
+        // ignore
+      }
+    }
     return {
       signal: 'HOLD',
       confidence: 0,
-      reason: `NVIDIA AI error: ${error.message}`,
+      reason: `NVIDIA AI error: ${errorDetail}`,
     };
   }
 }
@@ -117,7 +139,7 @@ router.post('/analyze', async (req, res) => {
   const email = req.user?.email || req.body.email || 'demo@example.com';
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), 12000));
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), 20000));
   try {
     const result = await Promise.race([
       getAIAnalysis(email, symbol, null, req.body.closes || null),
