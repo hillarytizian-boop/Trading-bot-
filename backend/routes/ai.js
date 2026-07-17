@@ -10,7 +10,8 @@ const nvidiaClient = new OpenAI({
   apiKey: process.env.NVIDIA_API_KEY,
 });
 
-const MODEL = 'deepseek-ai/deepseek-v4-pro';
+// Use the model that was tested in the Python script
+const MODEL = 'z-ai/glm-5.2';
 
 // ─── Safe number helper ──────────────────────────────────────────
 function safeNumber(value, fallback = 0) {
@@ -18,6 +19,7 @@ function safeNumber(value, fallback = 0) {
   return isNaN(num) ? fallback : num;
 }
 
+// ─── Query NVIDIA with retries ──────────────────────────────────
 async function queryNvidiaModel(prompt) {
   const messages = [{ role: 'user', content: prompt }];
   let lastError;
@@ -60,7 +62,8 @@ async function queryNvidiaModel(prompt) {
       if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
     }
   }
-  throw lastError || new Error('All NVIDIA attempts failed');
+  console.error('[AI] All NVIDIA attempts failed:', lastError?.message);
+  return { success: false, error: lastError?.message || 'Unknown error' };
 }
 
 // ─── Compute EMAs with fallback ──────────────────────────────────
@@ -113,6 +116,44 @@ function computeADX(closes) {
   }
 }
 
+// ─── Rule‑based fallback (if AI fails) ─────────────────────────
+function ruleBasedSignal(ind, currentPrice, extra, adx) {
+  let score = 0;
+  const { rsi, macd, ema20, ema50 } = ind;
+  const { ema20: e20, ema50: e50, ema200: e200 } = extra;
+  const reasons = [];
+
+  if (rsi < 30) { score += 2; reasons.push('RSI oversold'); }
+  else if (rsi > 70) { score -= 2; reasons.push('RSI overbought'); }
+  else if (rsi < 45) { score += 1; reasons.push('RSI low'); }
+  else if (rsi > 55) { score -= 1; reasons.push('RSI high'); }
+
+  if (macd > 0) { score += 1; reasons.push('MACD positive'); }
+  else if (macd < 0) { score -= 1; reasons.push('MACD negative'); }
+
+  if (currentPrice > e20 && e20 > e50 && e50 > e200) { score += 2; reasons.push('Strong uptrend'); }
+  else if (currentPrice < e20 && e20 < e50 && e50 < e200) { score -= 2; reasons.push('Strong downtrend'); }
+  else if (currentPrice > e20 && e20 > e50) { score += 1; reasons.push('Uptrend'); }
+  else if (currentPrice < e20 && e20 < e50) { score -= 1; reasons.push('Downtrend'); }
+
+  let signal = 'HOLD';
+  let confidence = 30;
+  if (score >= 3) { signal = 'BUY'; confidence = 60 + score * 5; }
+  else if (score <= -3) { signal = 'SELL'; confidence = 60 + Math.abs(score) * 5; }
+  else if (score >= 2) { signal = 'BUY'; confidence = 50 + score * 5; }
+  else if (score <= -2) { signal = 'SELL'; confidence = 50 + Math.abs(score) * 5; }
+  else { signal = 'HOLD'; confidence = 30 + Math.abs(score) * 5; }
+  confidence = Math.min(100, Math.max(0, confidence));
+
+  return {
+    signal,
+    confidence,
+    reason: `Rule‑based: ${reasons.join(', ')}`,
+    trend: (score > 0) ? 'Bullish' : (score < 0) ? 'Bearish' : 'Sideways',
+    market_regime: (adx > 25) ? 'Trending' : 'Ranging',
+  };
+}
+
 // ─── Main AI analysis function ──────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
   try {
@@ -121,159 +162,95 @@ async function getAIAnalysis(email, symbol, price, closes) {
       return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥20 candles)' };
     }
 
-    // ─── Calculate indicators ──────────────────────────────────────
     const ind = instance.calculateIndicators(data.closes);
     if (!ind) {
       return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
 
-    // ─── Validate all indicator values ──────────────────────────────
+    // Validate and sanitize indicators
     const rsi = safeNumber(ind.rsi);
     const macd = safeNumber(ind.macd);
-    const ema20 = safeNumber(ind.ema20);
-    const ema50 = safeNumber(ind.ema50);
     const atr = safeNumber(ind.atr);
     const bbUpper = safeNumber(ind.bbUpper);
     const bbLower = safeNumber(ind.bbLower);
     const currentPrice = price || data.price || ind.currentPrice || 0;
-
-    // ─── Extra indicators (EMAs) ──────────────────────────────────
     const extra = computeExtraIndicators(data.closes);
     const adx = computeADX(data.closes);
 
-    // ─── Reject weak trend ──────────────────────────────────────────
-    if (adx < 20) {
-      return {
-        signal: 'HOLD',
-        confidence: 40,
-        reason: `Weak trend (ADX ${adx.toFixed(1)} < 20). Market is ranging.`,
-      };
-    }
-
-    // ─── Build prompt (all values guaranteed numbers) ──────────────
-    const prompt = `You are an institutional-grade cryptocurrency trading analyst specializing in Binance spot and futures markets.
-
-Your objective is to maximize risk-adjusted returns, not the number of trades.
-
-Analyze the following market data:
-
-Market: ${symbol}
-Current Price: $${currentPrice.toFixed(2)}
-
-Technical Indicators
-- RSI(14): ${rsi.toFixed(2)}
-- MACD: ${macd.toFixed(4)}
-- EMA20: ${extra.ema20.toFixed(2)}
-- EMA50: ${extra.ema50.toFixed(2)}
-- EMA200: ${extra.ema200.toFixed(2)}
-- ATR(14): ${atr.toFixed(4)}
-- ADX: ${adx.toFixed(2)}
-- Bollinger Upper: ${bbUpper.toFixed(2)}
-- Bollinger Lower: ${bbLower.toFixed(2)}
-- Volume: ${data.volumes?.[data.volumes.length-1] || 0}
-- Average Volume: ${data.volumes ? (data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length).toFixed(2) : 0}
-
-Market Structure
-- Trend: ${extra.ema20 > extra.ema50 && extra.ema50 > extra.ema200 ? 'Bullish' : extra.ema20 < extra.ema50 && extra.ema50 < extra.ema200 ? 'Bearish' : 'Sideways'}
-- Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
-- Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
-- Recent High: ${Math.max(...data.closes).toFixed(2)}
-- Recent Low: ${Math.min(...data.closes).toFixed(2)}
-
-Multi-Timeframe
-- 1m Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
-- 5m Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
-- 15m Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
-- 1h Trend: ${extra.ema20 > extra.ema50 ? 'Bullish' : 'Bearish'}
-
-Risk Rules
-- Never recommend a trade with Risk:Reward below 1:2.
-- Reject trades that move directly into support or resistance.
-- Reject trades with conflicting multi-timeframe trends.
-- A BUY requires at least five bullish confirmations. A SELL requires at least five bearish confirmations.
-  Indicators include RSI, MACD, EMA20, EMA50, EMA200, ADX, ATR, Bollinger Bands, Volume, Support/Resistance, Trend.
-- Do not recommend trades against the higher timeframe trend.
-- Return HOLD if fewer than five confirmations agree.
-- Prefer trading with the dominant trend.
-- Consider volatility before setting stop-loss.
-- If confidence is below 75%, return HOLD.
-
-Evaluate:
-
-1. Trend strength
-2. Momentum
-3. Volatility
-4. Volume confirmation
-5. Indicator agreement
-6. Breakout or reversal probability
-7. Risk versus reward
-8. Probability of success
-
-Return ONLY valid JSON.
-
-{
-  "signal":"BUY|SELL|HOLD",
-  "confidence":0,
-  "trend":"Bullish|Bearish|Sideways",
-  "market_regime":"Trending|Ranging|High Volatility",
-  "entry_price":0,
-  "stop_loss":0,
-  "take_profit":0,
-  "risk_reward":"1:2.5",
-  "expected_move_percent":0,
-  "trade_duration":"Scalp|Intraday|Swing",
-  "reason":"Detailed explanation using all indicators.",
-  "pros":["...","...","..."],
-  "cons":["...","...","..."],
-  "indicator_scores":{
-    "RSI":0,
-    "MACD":0,
-    "EMA":0,
-    "ADX":0,
-    "Volume":0,
-    "Trend":0,
-    "SupportResistance":0
-  }
-}
-
-Do not invent missing information.
-If the provided data is insufficient, explain why and return HOLD.
-Return only JSON with no markdown or additional text.`;
+    // ─── Try NVIDIA AI first ──────────────────────────────────────
+    const prompt = `You are a professional crypto trader. Analyze:
+Price: $${currentPrice.toFixed(2)}
+RSI: ${rsi.toFixed(2)}
+MACD: ${macd.toFixed(4)}
+EMA20: ${extra.ema20.toFixed(2)}
+EMA50: ${extra.ema50.toFixed(2)}
+EMA200: ${extra.ema200.toFixed(2)}
+ATR: ${atr.toFixed(4)}
+ADX: ${adx.toFixed(2)}
+Bollinger Upper: ${bbUpper.toFixed(2)}
+Bollinger Lower: ${bbLower.toFixed(2)}
+Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
 
     let result;
     try {
       result = await queryNvidiaModel(prompt);
     } catch (error) {
-      console.error('[AI] All NVIDIA attempts failed:', error.message);
-      return { signal: 'HOLD', confidence: 0, reason: 'AI model unavailable' };
+      console.error('[AI] NVIDIA query error:', error.message);
+      result = { success: false };
     }
 
-    if (!result.success) {
-      return { signal: 'HOLD', confidence: 0, reason: 'AI model error' };
+    let ai = null;
+    if (result && result.success) {
+      ai = result.data;
     }
 
-    let ai = result.data;
+    // ─── Fallback to rule‑based if AI failed ────────────────────
+    if (!ai || !ai.signal || ai.confidence < 0) {
+      console.log('[AI] Using rule‑based fallback');
+      const fallback = ruleBasedSignal(ind, currentPrice, extra, adx);
+      return {
+        signal: fallback.signal,
+        confidence: fallback.confidence,
+        trend: fallback.trend,
+        market_regime: fallback.market_regime,
+        entry_price: currentPrice,
+        stop_loss: 0,
+        take_profit: 0,
+        risk_reward: '1:1',
+        expected_move_percent: 0,
+        trade_duration: 'Intraday',
+        reason: fallback.reason,
+        pros: ['Rule‑based signal'],
+        cons: ['No AI confirmation'],
+        indicator_scores: { RSI: 0, MACD: 0, EMA: 0, ADX: 0, Volume: 0, Trend: 0, SupportResistance: 0 },
+        data: { price: currentPrice, rsi, macd, ema20: extra.ema20, ema50: extra.ema50, ema200: extra.ema200, atr, adx },
+      };
+    }
+
+    // ─── Process AI response ──────────────────────────────────────
     const confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 0));
+    let signal = ai.signal || 'HOLD';
+    let reason = ai.reason || '';
 
-    // ─── Reject if too close to S/R ──────────────────────────────────
+    // Reject if too close to S/R
     const support = Math.min(...data.closes) * 0.99;
     const resistance = Math.max(...data.closes) * 1.01;
-    if (ai.signal === 'BUY' && Math.abs(resistance - currentPrice) / currentPrice < 0.01) {
-      ai.signal = 'HOLD';
-      ai.reason = (ai.reason || '') + ' Too close to resistance.';
+    if (signal === 'BUY' && Math.abs(resistance - currentPrice) / currentPrice < 0.01) {
+      signal = 'HOLD';
+      reason += ' Too close to resistance.';
     }
-    if (ai.signal === 'SELL' && Math.abs(currentPrice - support) / currentPrice < 0.01) {
-      ai.signal = 'HOLD';
-      ai.reason = (ai.reason || '') + ' Too close to support.';
+    if (signal === 'SELL' && Math.abs(currentPrice - support) / currentPrice < 0.01) {
+      signal = 'HOLD';
+      reason += ' Too close to support.';
     }
 
     if (confidence < 75) {
-      ai.signal = 'HOLD';
-      ai.reason = (ai.reason || '') + ' (confidence below 75%)';
+      signal = 'HOLD';
+      reason = (reason ? reason + ' ' : '') + '(confidence below 75%)';
     }
 
     return {
-      signal: ai.signal || 'HOLD',
+      signal: signal,
       confidence: confidence,
       trend: ai.trend || 'Sideways',
       market_regime: ai.market_regime || 'Ranging',
@@ -283,7 +260,7 @@ Return only JSON with no markdown or additional text.`;
       risk_reward: ai.risk_reward || '1:1',
       expected_move_percent: safeNumber(ai.expected_move_percent, 0),
       trade_duration: ai.trade_duration || 'Intraday',
-      reason: ai.reason || 'No reason provided',
+      reason: reason || 'No reason provided',
       pros: Array.isArray(ai.pros) ? ai.pros : [],
       cons: Array.isArray(ai.cons) ? ai.cons : [],
       indicator_scores: ai.indicator_scores || {},
@@ -309,7 +286,6 @@ router.post('/analyze', async (req, res) => {
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
   const email = req.user?.email || req.body.email || 'demo@example.com';
-
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   try {
