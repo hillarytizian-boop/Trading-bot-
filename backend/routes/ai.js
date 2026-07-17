@@ -1,109 +1,258 @@
+global.WebSocket = require('ws');
+
 const router = require('express').Router();
+const OpenAI = require('openai');
 const { instance } = require('../binanceData');
 
-// ─── Simple EMA calculation ──────────────────────────────────────
-function calculateEMA(values, period) {
-  if (values.length < period) return values[values.length-1] || 0;
-  const k = 2 / (period + 1);
-  let ema = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
+const nvidiaClient = new OpenAI({
+  baseURL: 'https://integrate.api.nvidia.com/v1',
+  apiKey: process.env.NVIDIA_API_KEY,
+});
+
+// ─── Models ──────────────────────────────────────────────────────
+const RESEARCH_MODEL = 'deepseek-ai/deepseek-v4-flash';
+const DECISION_MODEL = 'z-ai/glm-5.2';
+
+// ─── Safe number helper ──────────────────────────────────────────
+function safeNumber(value, fallback = 0) {
+  const num = Number(value);
+  return isNaN(num) ? fallback : num;
+}
+
+// ─── Helper: query a model with retries ──────────────────────────
+async function queryModel(model, messages, options = {}) {
+  const defaultOpts = {
+    temperature: 0.4,
+    top_p: 0.9,
+    max_tokens: 4096,
+    stream: false,
+    timeout: 20000,
+  };
+  const opts = { ...defaultOpts, ...options };
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const completion = await nvidiaClient.chat.completions.create({
+        model,
+        messages,
+        ...opts,
+      });
+      const choice = completion.choices[0];
+      const content = choice.message?.content || '';
+      return { success: true, content, reasoning: choice.message?.reasoning || null };
+    } catch (error) {
+      lastError = error;
+      console.warn(`[AI] ${model} attempt ${attempt+1} failed:`, error.message);
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+    }
   }
-  return ema;
+  console.error(`[AI] All attempts for ${model} failed:`, lastError?.message);
+  return { success: false, error: lastError?.message || 'Unknown error' };
 }
 
-// ─── Simple RSI ──────────────────────────────────────────────────
-function calculateRSI(closes, period = 14) {
-  if (closes.length < period + 1) return 50;
-  let gains = 0, losses = 0;
-  for (let i = 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i-1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
-  }
-  const avgGain = gains / (closes.length - 1);
-  const avgLoss = losses / (closes.length - 1);
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - (100 / (1 + rs));
-}
-
-// ─── Simple MACD ──────────────────────────────────────────────────
-function calculateMACD(closes) {
-  if (closes.length < 26) return 0;
-  const ema12 = calculateEMA(closes, 12);
-  const ema26 = calculateEMA(closes, 26);
-  return ema12 - ema26;
-}
-
-// ─── Main analysis ──────────────────────────────────────────────
+// ─── Main AI pipeline ──────────────────────────────────────────────
 async function getAIAnalysis(email, symbol, price, closes) {
   try {
     const data = await instance.getAnalysisData(symbol);
     if (!data || !data.closes || data.closes.length < 20) {
-      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data' };
+      return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥20 candles)' };
     }
 
-    const prices = data.closes;
-    const currentPrice = price || data.price || prices[prices.length-1] || 0;
+    const ind = instance.calculateIndicators(data.closes);
+    if (!ind) {
+      return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
+    }
 
-    // Calculate indicators
-    const rsi = calculateRSI(prices);
-    const macd = calculateMACD(prices);
-    const ema20 = calculateEMA(prices, 20);
-    const ema50 = calculateEMA(prices, 50);
-    const ema200 = calculateEMA(prices, 200);
+    // Sanitize all values
+    const rsi = safeNumber(ind.rsi);
+    const macd = safeNumber(ind.macd);
+    const ema20 = safeNumber(ind.ema20);
+    const ema50 = safeNumber(ind.ema50);
+    const ema200 = safeNumber(ind.ema200 || ema50);
+    const atr = safeNumber(ind.atr);
+    const bbUpper = safeNumber(ind.bbUpper);
+    const bbLower = safeNumber(ind.bbLower);
+    const currentPrice = price || data.price || ind.currentPrice || 0;
+    const volume = data.volumes && data.volumes.length > 0 ? data.volumes[data.volumes.length-1] : 0;
+    const avgVolume = data.volumes && data.volumes.length > 0 ? data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length : 0;
 
-    // ─── Rule‑based signal ──────────────────────────────────────────
-    let score = 0;
-    const reasons = [];
+    // ─── Step 1: DeepSeek Research ──────────────────────────────
+    const researchPrompt = `You are a senior market analyst. Perform a deep research on the following cryptocurrency market data.
 
-    if (rsi < 30) { score += 2; reasons.push('RSI oversold'); }
-    else if (rsi > 70) { score -= 2; reasons.push('RSI overbought'); }
-    else if (rsi < 45) { score += 1; reasons.push('RSI low'); }
-    else if (rsi > 55) { score -= 1; reasons.push('RSI high'); }
+Market: ${symbol}
+Current Price: $${currentPrice.toFixed(2)}
 
-    if (macd > 0) { score += 1; reasons.push('MACD positive'); }
-    else if (macd < 0) { score -= 1; reasons.push('MACD negative'); }
+Technical Indicators:
+- RSI(14): ${rsi.toFixed(2)}
+- MACD: ${macd.toFixed(4)}
+- EMA20: ${ema20.toFixed(2)}
+- EMA50: ${ema50.toFixed(2)}
+- EMA200: ${ema200.toFixed(2)}
+- ATR(14): ${atr.toFixed(4)}
+- Bollinger Upper: ${bbUpper.toFixed(2)}
+- Bollinger Lower: ${bbLower.toFixed(2)}
+- Volume: ${volume}
+- Avg Volume: ${avgVolume.toFixed(2)}
 
-    if (currentPrice > ema20 && ema20 > ema50 && ema50 > ema200) { score += 2; reasons.push('Strong uptrend'); }
-    else if (currentPrice < ema20 && ema20 < ema50 && ema50 < ema200) { score -= 2; reasons.push('Strong downtrend'); }
-    else if (currentPrice > ema20 && ema20 > ema50) { score += 1; reasons.push('Uptrend'); }
-    else if (currentPrice < ema20 && ema20 < ema50) { score -= 1; reasons.push('Downtrend'); }
+Market Structure:
+- Trend: ${currentPrice > ema20 && ema20 > ema50 && ema50 > ema200 ? 'Bullish' : currentPrice < ema20 && ema20 < ema50 && ema50 < ema200 ? 'Bearish' : 'Sideways'}
+- Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
+- Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
 
-    let signal = 'HOLD';
-    let confidence = 30;
-    if (score >= 3) { signal = 'BUY'; confidence = 60 + score * 5; }
-    else if (score <= -3) { signal = 'SELL'; confidence = 60 + Math.abs(score) * 5; }
-    else if (score >= 2) { signal = 'BUY'; confidence = 50 + score * 5; }
-    else if (score <= -2) { signal = 'SELL'; confidence = 50 + Math.abs(score) * 5; }
-    else { signal = 'HOLD'; confidence = 30 + Math.abs(score) * 5; }
-    confidence = Math.min(100, Math.max(0, confidence));
+Provide a comprehensive research summary covering:
+- Trend strength and direction.
+- Momentum and overbought/oversold conditions.
+- Volatility and risk.
+- Volume analysis.
+- Key support/resistance levels.
+- Potential breakout or reversal scenarios.
+- Any other relevant observations.
 
-    // ─── Confidence threshold ──────────────────────────────────────
+Your summary should be detailed, objective, and actionable for a trading decision.`;
+
+    const researchResult = await queryModel(RESEARCH_MODEL, [
+      { role: 'user', content: researchPrompt }
+    ], { temperature: 1.0, top_p: 0.95, max_tokens: 4096 });
+
+    let researchSummary = '';
+    let researchError = null;
+    if (researchResult.success) {
+      researchSummary = researchResult.content;
+      console.log('[AI] DeepSeek research completed.');
+    } else {
+      researchError = researchResult.error;
+      console.warn('[AI] DeepSeek research failed:', researchError);
+      // We'll still try GLM with raw data, but we'll note the failure.
+    }
+
+    // ─── Step 2: GLM Decision ──────────────────────────────────────
+    const decisionPrompt = `You are an institutional-grade cryptocurrency trading analyst. Based on the following research summary and raw market data, provide a final trading decision (BUY, SELL, or HOLD) with confidence score.
+
+--- RESEARCH SUMMARY ---
+${researchSummary || 'Research unavailable. Use only the raw data below.'}
+--- END OF RESEARCH ---
+
+Raw Market Data:
+Market: ${symbol}
+Price: $${currentPrice.toFixed(2)}
+RSI: ${rsi.toFixed(2)}
+MACD: ${macd.toFixed(4)}
+EMA20: ${ema20.toFixed(2)}
+EMA50: ${ema50.toFixed(2)}
+EMA200: ${ema200.toFixed(2)}
+ATR: ${atr.toFixed(4)}
+Bollinger Upper: ${bbUpper.toFixed(2)}
+Bollinger Lower: ${bbLower.toFixed(2)}
+Volume: ${volume}
+Avg Volume: ${avgVolume.toFixed(2)}
+Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
+Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
+
+Risk Rules:
+- Never recommend a trade with Risk:Reward below 1:2.
+- Reject trades that move directly into support or resistance.
+- Require at least three independent confirmations.
+- Prefer trading with the dominant trend.
+- If confidence is below 75%, return HOLD.
+
+Return ONLY valid JSON:
+{
+  "signal":"BUY|SELL|HOLD",
+  "confidence":0,
+  "trend":"Bullish|Bearish|Sideways",
+  "market_regime":"Trending|Ranging|High Volatility",
+  "entry_price":0,
+  "stop_loss":0,
+  "take_profit":0,
+  "risk_reward":"1:2.5",
+  "expected_move_percent":0,
+  "trade_duration":"Scalp|Intraday|Swing",
+  "reason":"Detailed explanation using all data.",
+  "pros":["...","...","..."],
+  "cons":["...","...","..."],
+  "indicator_scores":{
+    "RSI":0,
+    "MACD":0,
+    "EMA":0,
+    "ADX":0,
+    "Volume":0,
+    "Trend":0,
+    "SupportResistance":0
+  }
+}`;
+
+    const decisionResult = await queryModel(DECISION_MODEL, [
+      { role: 'user', content: decisionPrompt }
+    ], { temperature: 0.4, top_p: 0.9, max_tokens: 1024 });
+
+    if (!decisionResult.success) {
+      return {
+        signal: 'HOLD',
+        confidence: 0,
+        reason: `GLM decision failed: ${decisionResult.error || 'Unknown'}`,
+      };
+    }
+
+    // ─── Parse GLM response ──────────────────────────────────────────
+    let ai;
+    try {
+      const jsonMatch = decisionResult.content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON found');
+      ai = JSON.parse(jsonMatch[0]);
+    } catch (e) {
+      return {
+        signal: 'HOLD',
+        confidence: 0,
+        reason: `Failed to parse GLM response: ${e.message}`,
+      };
+    }
+
+    const confidence = Math.max(0, Math.min(100, Number(ai.confidence) || 0));
+
+    // ─── Reject if too close to S/R ──────────────────────────────────
+    const support = Math.min(...data.closes) * 0.99;
+    const resistance = Math.max(...data.closes) * 1.01;
+    if (ai.signal === 'BUY' && Math.abs(resistance - currentPrice) / currentPrice < 0.01) {
+      ai.signal = 'HOLD';
+      ai.reason = (ai.reason || '') + ' Too close to resistance.';
+    }
+    if (ai.signal === 'SELL' && Math.abs(currentPrice - support) / currentPrice < 0.01) {
+      ai.signal = 'HOLD';
+      ai.reason = (ai.reason || '') + ' Too close to support.';
+    }
+
     if (confidence < 75) {
-      signal = 'HOLD';
-      reasons.push('(confidence below 75%)');
+      ai.signal = 'HOLD';
+      ai.reason = (ai.reason || '') + ' (confidence below 75%)';
     }
-
-    const reason = reasons.length ? reasons.join(', ') : 'No clear signal';
 
     return {
-      signal,
-      confidence,
-      trend: score > 0 ? 'Bullish' : score < 0 ? 'Bearish' : 'Sideways',
-      market_regime: 'Ranging',
-      entry_price: currentPrice,
-      stop_loss: 0,
-      take_profit: 0,
-      risk_reward: '1:1',
-      expected_move_percent: 0,
-      trade_duration: 'Intraday',
-      reason,
-      pros: ['Rule-based signal'],
-      cons: ['No AI confirmation'],
-      indicator_scores: { RSI: rsi, MACD: macd, EMA: 0, ADX: 0, Volume: 0, Trend: score, SupportResistance: 0 },
-      data: { price: currentPrice, rsi, macd, ema20, ema50, ema200 },
+      signal: ai.signal || 'HOLD',
+      confidence: confidence,
+      trend: ai.trend || 'Sideways',
+      market_regime: ai.market_regime || 'Ranging',
+      entry_price: safeNumber(ai.entry_price, currentPrice),
+      stop_loss: safeNumber(ai.stop_loss, 0),
+      take_profit: safeNumber(ai.take_profit, 0),
+      risk_reward: ai.risk_reward || '1:1',
+      expected_move_percent: safeNumber(ai.expected_move_percent, 0),
+      trade_duration: ai.trade_duration || 'Intraday',
+      reason: ai.reason || 'No reason provided',
+      pros: Array.isArray(ai.pros) ? ai.pros : [],
+      cons: Array.isArray(ai.cons) ? ai.cons : [],
+      indicator_scores: ai.indicator_scores || {},
+      research_summary: researchSummary || null,
+      research_error: researchError,
+      reasoning: decisionResult.reasoning || null,
+      data: {
+        price: currentPrice,
+        rsi,
+        macd,
+        ema20,
+        ema50,
+        ema200,
+        atr,
+      },
     };
   } catch (error) {
     console.error('[AI] Error:', error.message);
@@ -111,7 +260,7 @@ async function getAIAnalysis(email, symbol, price, closes) {
   }
 }
 
-// ─── Endpoints ──────────────────────────────────────────────────────
+// ─── HTTP endpoints ──────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
