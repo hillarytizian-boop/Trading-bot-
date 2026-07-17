@@ -1,4 +1,7 @@
-const domain = require('domain');
+// ─── Global fetch polyfill ──────────────────────────────────────────
+const fetch = require('node-fetch');
+global.fetch = fetch;
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -8,12 +11,11 @@ const morgan = require('morgan');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 
-// ─── Global handlers ──────────────────────────────────────────────
+// ─── Global uncaught exception handler ────────────────────────────
 process.on('uncaughtException', (err) => {
-  console.error('🔥 Uncaught Exception:', err.stack);
-  // Do NOT exit – keep server alive
+  console.error('🔥 Uncaught Exception:', err.message, err.stack);
 });
-process.on('unhandledRejection', (reason, promise) => {
+process.on('unhandledRejection', (reason) => {
   console.error('🔥 Unhandled Rejection:', reason);
 });
 
@@ -29,6 +31,7 @@ for (const key of requiredEnv) {
   }
 }
 
+// ─── Middleware ────────────────────────────────────────────────────
 app.use(helmet());
 app.use(morgan('combined'));
 app.set('trust proxy', 1);
@@ -66,7 +69,6 @@ async function authenticate(req, res, next) {
 app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
 app.use('/api', authenticate);
 
-// ─── Safe route loader ────────────────────────────────────────────
 function safeRequire(routePath) {
   try {
     const module = require(routePath);
@@ -114,19 +116,20 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+// ─── Create HTTP server ──────────────────────────────────────────
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
 
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
-// ─── WebSocket server for price streaming ──────────────────────────
+// ─── WebSocket server (attached to the same HTTP server) ──────────
 const WebSocket = require('ws');
 const { instance } = require('./binanceData');
+const marketData = require('./marketData');
 
-const wss = new WebSocket.Server({ path: '/ws', noServer: true });
+const wss = new WebSocket.Server({ noServer: true });
 
-// Upgrade HTTP to WebSocket
-app.on('upgrade', (request, socket, head) => {
+server.on('upgrade', (request, socket, head) => {
+  // Only upgrade if the path is /ws
   if (request.url === '/ws') {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
@@ -165,9 +168,10 @@ async function broadcastPrice() {
   }
 }
 
-// Run every 2 seconds
 setInterval(broadcastPrice, 2000);
 
-// ─── Start WebSocket market data subscriptions ────────────────────
-const marketData = require('./marketData');
+// ─── Start market data subscriptions ──────────────────────────────
 marketData.start(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']);
+
+process.on('SIGINT', () => process.exit(0));
+process.on('SIGTERM', () => process.exit(0));
