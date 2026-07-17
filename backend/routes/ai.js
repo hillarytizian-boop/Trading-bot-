@@ -18,6 +18,20 @@ const BINANCE_NEWS_API = 'https://api.binance.com/bapi/composite/v1/public/marke
 const CRYPTO_NEWS_API = 'https://cryptocurrency.cv/api/news';
 const BLACKNODE_NEWS_API = 'https://blacknodezw.zone.id/api/news';
 
+// ─── Helper: fetch with timeout ──────────────────────────────
+async function fetchWithTimeout(url, options = {}, timeout = 5000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+}
+
 // ─── Safe number helper ──────────────────────────────────────────
 function safeNumber(value, fallback = 0) {
   const num = Number(value);
@@ -29,10 +43,10 @@ async function fetchBinanceNews(symbol) {
   try {
     const cleanSymbol = symbol.replace('/', '');
     const url = `${BINANCE_NEWS_API}?symbol=${cleanSymbol}`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Binance news error: ${response.status}`);
+    const response = await fetchWithTimeout(url, {}, 5000);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    if (data.code !== '000000') throw new Error(`Binance news API error: ${data.message || 'Unknown'}`);
+    if (data.code !== '000000') throw new Error(`API error: ${data.message || 'Unknown'}`);
     const articles = data.data?.articles || [];
     return articles.map(a => ({
       title: a.title || '',
@@ -58,8 +72,8 @@ async function fetchCryptoNews(symbol) {
     };
     const category = categories[symbol] || 'cryptocurrency';
     const url = `${CRYPTO_NEWS_API}?limit=10&category=${category}`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Crypto news error: ${response.status}`);
+    const response = await fetchWithTimeout(url, {}, 5000);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     return data.articles || [];
   } catch (error) {
@@ -71,7 +85,6 @@ async function fetchCryptoNews(symbol) {
 // ─── Fetch Blacknode news ──────────────────────────────────────
 async function fetchBlacknodeNews(symbol) {
   try {
-    // Map symbol to search query (e.g., BTCUSDT → bitcoin)
     const queryMap = {
       'BTCUSDT': 'bitcoin',
       'ETHUSDT': 'ethereum',
@@ -79,14 +92,12 @@ async function fetchBlacknodeNews(symbol) {
       'BNBUSDT': 'binancecoin',
     };
     const q = queryMap[symbol] || 'cryptocurrency';
-    const category = 'technology'; // or 'cryptocurrency' – you can adjust
+    const category = 'technology';
     const limit = 10;
     const url = `${BLACKNODE_NEWS_API}?q=${q}&category=${category}&limit=${limit}`;
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Blacknode news error: ${response.status}`);
+    const response = await fetchWithTimeout(url, {}, 5000);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    // Assume the response is an array of articles with title, description, source, url, publishedAt
-    // If it's nested, adjust accordingly.
     const articles = data.articles || data.data || data.results || [];
     if (!Array.isArray(articles)) throw new Error('Unexpected response format');
     return articles.map(a => ({
@@ -102,15 +113,17 @@ async function fetchBlacknodeNews(symbol) {
   }
 }
 
-// ─── Combine all news with deduplication ────────────────────────────
+// ─── Combine all news ──────────────────────────────────────────
 async function fetchCombinedNews(symbol) {
-  const [binanceNews, cryptoNews, blacknodeNews] = await Promise.all([
+  const results = await Promise.allSettled([
     fetchBinanceNews(symbol),
     fetchCryptoNews(symbol),
     fetchBlacknodeNews(symbol),
   ]);
-  const all = [...binanceNews, ...cryptoNews, ...blacknodeNews];
-  // Deduplicate by title (case‑insensitive)
+  const all = results
+    .filter(r => r.status === 'fulfilled')
+    .flatMap(r => r.value);
+  // Deduplicate by title
   const seen = new Set();
   const unique = all.filter(item => {
     const key = (item.title || '').toLowerCase().trim();
@@ -131,7 +144,7 @@ function formatNewsForPrompt(articles) {
   ).join('\n\n');
 }
 
-// ─── Helper: query a model with retries ────────────────────────
+// ─── Helper: query NVIDIA model with retries ──────────────────
 async function queryModel(model, messages, options = {}) {
   const defaultOpts = {
     temperature: 0.4,
@@ -171,8 +184,14 @@ async function getAIAnalysis(email, symbol, price, closes) {
       return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥20 candles)' };
     }
 
-    // 2. Fetch combined news (Binance + Crypto.cv + Blacknode)
-    const newsArticles = await fetchCombinedNews(symbol);
+    // 2. Fetch combined news (with error handling)
+    let newsArticles = [];
+    try {
+      newsArticles = await fetchCombinedNews(symbol);
+    } catch (newsError) {
+      console.warn('[AI] News fetch error:', newsError.message);
+      // continue without news
+    }
     const newsText = formatNewsForPrompt(newsArticles);
 
     const ind = instance.calculateIndicators(data.closes);
@@ -192,7 +211,7 @@ async function getAIAnalysis(email, symbol, price, closes) {
     const volume = data.volumes && data.volumes.length > 0 ? data.volumes[data.volumes.length-1] : 0;
     const avgVolume = data.volumes && data.volumes.length > 0 ? data.volumes.reduce((a,b) => a+b, 0) / data.volumes.length : 0;
 
-    // ─── Step 1: DeepSeek Research (Technical + Combined News) ──
+    // ─── Step 1: DeepSeek Research ──────────────────────────────
     const researchPrompt = `You are a senior market analyst. Perform a deep research on the following cryptocurrency market data and recent news (Binance, Crypto.cv, Blacknode).
 
 === MARKET DATA ===
@@ -216,7 +235,7 @@ Market Structure:
 - Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
 - Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
 
-=== RECENT CRYPTO NEWS (Binance + Crypto.cv + Blacknode) ===
+=== RECENT CRYPTO NEWS ===
 ${newsText}
 
 === RESEARCH TASK ===
@@ -268,7 +287,7 @@ Volume: ${volume}
 Avg Volume: ${avgVolume.toFixed(2)}
 Support: ${(Math.min(...data.closes) * 0.99).toFixed(2)}
 Resistance: ${(Math.max(...data.closes) * 1.01).toFixed(2)}
-Recent News: ${newsArticles.length} articles (Binance, Crypto.cv, Blacknode)
+Recent News: ${newsArticles.length} articles
 
 === RISK RULES ===
 - Never recommend a trade with Risk:Reward below 1:2.
@@ -361,7 +380,7 @@ Return ONLY valid JSON:
       pros: Array.isArray(ai.pros) ? ai.pros : [],
       cons: Array.isArray(ai.cons) ? ai.cons : [],
       indicator_scores: ai.indicator_scores || {},
-      news_articles: newsArticles,      // all three sources combined
+      news_articles: newsArticles,
       research_summary: researchSummary || null,
       research_error: researchError,
       reasoning: decisionResult.reasoning || null,
@@ -376,8 +395,8 @@ Return ONLY valid JSON:
       },
     };
   } catch (error) {
-    console.error('[AI] Error:', error.message);
-    return { signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message };
+    console.error('[AI] Fatal error:', error.message, error.stack);
+    return { signal: 'HOLD', confidence: 0, reason: 'Internal error: ' + error.message };
   }
 }
 
@@ -392,7 +411,7 @@ router.post('/analyze', async (req, res) => {
     const result = await getAIAnalysis(email, symbol, null, null);
     res.json(result);
   } catch (error) {
-    console.error('[AI] Endpoint error:', error.message);
+    console.error('[AI] Route error:', error.message);
     res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message });
   }
 });
