@@ -74,72 +74,24 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   };
 
   useEffect(() => {
-    const WS_URL = "wss://trading-bot-lsnu.onrender.com/ws";
-    console.log("[WS] Attempting to connect to", WS_URL);
-    const ws = new WebSocket(WS_URL);
-    ws.onopen = () => {
-      console.log("[WS] Connected to backend");
+    const handlePrice = (price, candles) => {
+      setPrice(price);
+      setPriceHistory(candles || prev => [...prev, price].slice(-50));
+      setTickCount(prev => prev + 1);
     };
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("[WS] Received:", data);
-        if (data.price) {
-          setPrice(data.price);
-          setPriceHistory(prev => {
-            const h = [...prev, data.price];
-            return h.slice(-50);
-          });
-          setTickCount(prev => prev + 1);
-        }
-      } catch (e) {
-        console.error("[WS] Parse error:", e);
-      }
-    };
-    ws.onclose = () => {
-      console.log("[WS] Disconnected");
-    };
-    ws.onerror = (e) => {
-      console.error("[WS] Error:", e);
-    };
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) ws.close();
-    };
+    connectWebSocket(handlePrice);
+    return () => closeWebSocket();
   }, []);
 
   // ─── Scroll ─────────────────────────────────────────────────────
   useEffect(() => {
-    const WS_URL = "wss://trading-bot-lsnu.onrender.com/ws";
-    console.log("[WS] Attempting to connect to", WS_URL);
-    const ws = new WebSocket(WS_URL);
-    ws.onopen = () => {
-      console.log("[WS] Connected to backend");
+    const handlePrice = (price, candles) => {
+      setPrice(price);
+      setPriceHistory(candles || prev => [...prev, price].slice(-50));
+      setTickCount(prev => prev + 1);
     };
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        console.log("[WS] Received:", data);
-        if (data.price) {
-          setPrice(data.price);
-          setPriceHistory(prev => {
-            const h = [...prev, data.price];
-            return h.slice(-50);
-          });
-          setTickCount(prev => prev + 1);
-        }
-      } catch (e) {
-        console.error("[WS] Parse error:", e);
-      }
-    };
-    ws.onclose = () => {
-      console.log("[WS] Disconnected");
-    };
-    ws.onerror = (e) => {
-      console.error("[WS] Error:", e);
-    };
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) ws.close();
-    };
+    connectWebSocket(handlePrice);
+    return () => closeWebSocket();
   }, []);
 
   const handleBinanceConnect = async (email) => {

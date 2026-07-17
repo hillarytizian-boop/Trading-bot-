@@ -1,3 +1,4 @@
+const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
 import { Suspense, lazy } from 'react';
 
 const HilaBotMiniApp = lazy(() => import('./hilabot-miniapp-preview'));

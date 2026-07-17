@@ -1,3 +1,4 @@
+const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
 import { useState } from 'react';
 const DARK_BG = "#0E1621", DARK_PANEL = "#17212B", DARK_BORDER = "rgba(255,255,255,0.07)";
 const TEXT = "#E7ECF0", MUTED = "#6C7883", GREEN = "#4FCE5D", RED = "#FF5E5E", GOLD = "#F0B429", TG_BLUE = "#2AABEE";
@@ -17,7 +18,7 @@ export default function Backtest() {
   const runBacktest = async () => {
     setLoading(true); setError(null);
     try {
-      const res = await fetch('/api/backtest/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+      const res = await fetch(`${API_BASE_URL}/api/backtest/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Backtest failed');
       setResults(data);

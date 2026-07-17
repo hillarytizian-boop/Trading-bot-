@@ -1,3 +1,4 @@
+const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
 import { useState, useEffect, useRef } from 'react';
 
 const DARK_BG = "#0E1621", DARK_PANEL = "#17212B", DARK_BORDER = "rgba(255,255,255,0.07)";

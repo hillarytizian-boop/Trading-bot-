@@ -1,3 +1,4 @@
+const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
 import { useState, useEffect, useRef } from 'react';
 export default function Chart({ priceHistory, signals }) {
   const canvasRef = useRef(null);
