@@ -107,6 +107,9 @@ async function getAIAnalysis(email, symbol, price, closes) {
       return { signal: 'HOLD', confidence: 0, reason: 'Insufficient data (need ≥50 candles)' };
     }
     const ind = instance.calculateIndicators(data.closes);
+    if (!ind || typeof ind.rsi !== "number" || typeof ind.macd !== "number" || typeof ind.ema20 !== "number" || typeof ind.ema50 !== "number" || typeof ind.atr !== "number") {
+      return { signal: "HOLD", confidence: 0, reason: "Invalid indicator values" };
+    }
     if (!ind) {
       return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
     }
@@ -322,3 +325,4 @@ router.get('/market-data', async (req, res) => {
 });
 
 module.exports = { router, getAIAnalysis };
+// Override computeExtraIndicators with safe fallback
