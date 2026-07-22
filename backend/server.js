@@ -47,6 +47,11 @@ const supabase = createClient(
 
 // ─── Authentication ──────────────────────────────────────────────
 async function authenticate(req, res, next) {
+  // ─── Public endpoints: no auth required ──────────────────────────
+  const publicPaths = ["/api/health", "/api/ai/market-data"];
+  if (publicPaths.some(path => req.path.startsWith(path))) {
+    return next();
+  }
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
