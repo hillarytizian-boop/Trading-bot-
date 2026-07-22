@@ -45,13 +45,15 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// ─── Authentication ──────────────────────────────────────────────
+// ─── Authentication middleware with public endpoints exemption ──
 async function authenticate(req, res, next) {
-  // ─── Public endpoints: no auth required ──────────────────────────
-  const publicPaths = ["/api/health", "/api/ai/market-data"];
+  // ─── Public endpoints (no auth) ──────────────────────────────
+  const publicPaths = ['/api/health', '/api/ai/market-data'];
   if (publicPaths.some(path => req.path.startsWith(path))) {
     return next();
   }
+
+  // ─── JWT token ──────────────────────────────────────────────────
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.split(' ')[1];
@@ -63,11 +65,15 @@ async function authenticate(req, res, next) {
       }
     } catch (e) { /* ignore */ }
   }
+
+  // ─── Email fallback (only if enabled) ──────────────────────────
   const email = req.body?.email || req.query?.email;
   if (email && process.env.ALLOW_EMAIL_FALLBACK === 'true') {
     req.user = { email, id: email };
     return next();
   }
+
+  // ─── No valid auth ──────────────────────────────────────────────
   return res.status(401).json({ error: 'Authentication required' });
 }
 
@@ -126,15 +132,12 @@ const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
 
-// ─── WebSocket server (simpler approach) ──────────────────────────
+// ─── WebSocket server ──────────────────────────────────────────────
 const WebSocket = require('ws');
 const { instance } = require('./binanceData');
 const marketData = require('./marketData');
 
-const wss = new WebSocket.Server({ 
-  server, 
-  path: '/ws' 
-});
+const wss = new WebSocket.Server({ server, path: '/ws' });
 
 wss.on('connection', (ws) => {
   console.log('[WS] Frontend connected');
