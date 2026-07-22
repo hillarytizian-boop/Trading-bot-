@@ -11,7 +11,6 @@ const morgan = require('morgan');
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 
-// ─── Global uncaught exception handler ────────────────────────────
 process.on('uncaughtException', (err) => {
   console.error('🔥 Uncaught Exception:', err.message, err.stack);
 });
@@ -22,7 +21,6 @@ process.on('unhandledRejection', (reason) => {
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Validate env ──────────────────────────────────────────────────
 const requiredEnv = ['SUPABASE_URL', 'SUPABASE_ANON_KEY'];
 for (const key of requiredEnv) {
   if (!process.env[key]) {
@@ -31,7 +29,6 @@ for (const key of requiredEnv) {
   }
 }
 
-// ─── Middleware ────────────────────────────────────────────────────
 app.use(helmet());
 app.use(morgan('combined'));
 app.set('trust proxy', 1);
@@ -45,9 +42,9 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// ─── Authentication middleware with public endpoints exemption ──
+// ─── Authentication middleware ────────────────────────────────────
 async function authenticate(req, res, next) {
-  // ─── Public endpoints (no auth) ──────────────────────────────
+  // ─── PUBLIC endpoints (no auth) ──────────────────────────────
   const publicPaths = ['/api/health', '/api/ai/market-data'];
   if (publicPaths.some(path => req.path.startsWith(path))) {
     return next();
@@ -66,14 +63,13 @@ async function authenticate(req, res, next) {
     } catch (e) { /* ignore */ }
   }
 
-  // ─── Email fallback (only if enabled) ──────────────────────────
+  // ─── Email fallback (dev only) ──────────────────────────────────
   const email = req.body?.email || req.query?.email;
   if (email && process.env.ALLOW_EMAIL_FALLBACK === 'true') {
     req.user = { email, id: email };
     return next();
   }
 
-  // ─── No valid auth ──────────────────────────────────────────────
   return res.status(401).json({ error: 'Authentication required' });
 }
 
@@ -106,7 +102,6 @@ app.use('/api/user', safeRequire('./routes/user.js'));
 app.use('/api/trade', safeRequire('./routes/trade.js'));
 console.log('✅ Routes mounted');
 
-// ─── Serve frontend ──────────────────────────────────────────────
 const distPath = path.join(__dirname, '../frontend-react/dist');
 if (fs.existsSync(distPath)) app.use(express.static(distPath));
 
@@ -121,13 +116,11 @@ app.use((req, res) => {
   }
 });
 
-// ─── Global error handler ────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('🔥 Global error:', err);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// ─── Create HTTP server ──────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
@@ -144,7 +137,6 @@ wss.on('connection', (ws) => {
   ws.on('close', () => console.log('[WS] Frontend disconnected'));
 });
 
-// ─── Broadcast price updates every 2 seconds ──────────────────────
 let lastPrice = null;
 let lastCandles = [];
 
@@ -169,8 +161,6 @@ async function broadcastPrice() {
 }
 
 setInterval(broadcastPrice, 2000);
-
-// ─── Start market data subscriptions ──────────────────────────────
 marketData.start(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']);
 
 process.on('SIGINT', () => process.exit(0));
