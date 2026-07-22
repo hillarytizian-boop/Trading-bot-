@@ -82,7 +82,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/ai/market-data?symbol=BTCUSDT`);
+        const res = await fetch(API_BASE_URL + "/api/ai/market-data?symbol=BTCUSDT");
         if (!res.ok) throw new Error("HTTP " + res.status);
         const data = await res.json();
         if (data && typeof data.price === "number" && data.price > 0) {
