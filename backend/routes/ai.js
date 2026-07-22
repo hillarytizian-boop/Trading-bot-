@@ -4,11 +4,6 @@ const router = require('express').Router();
 const OpenAI = require('openai');
 const { instance } = require('../binanceData');
 
-// ─── Use the same client as Python script ──────────────────────────
-if (!process.env.NVIDIA_API_KEY) {
-  console.error('[AI] NVIDIA_API_KEY is not set in environment');
-}
-
 let nvidiaClient;
 try {
   nvidiaClient = new OpenAI({
@@ -19,136 +14,104 @@ try {
   console.error('[AI] OpenAI init error:', e.message);
 }
 
-// ─── Exactly the same model and parameters ─────────────────────────
 const MODEL = 'z-ai/glm-5.2';
-const TEMPERATURE = 1;
-const TOP_P = 1;
-const MAX_TOKENS = 16384;
-const SEED = 42;
+
+// ─── Retry helper ────────────────────────────────────────────────────
+async function callWithRetry(fn, retries = 3, delay = 1500) {
+  let lastError;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      console.warn(`[AI] Attempt ${i+1} failed: ${err.message}`);
+      if (i < retries - 1) await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
 
 function safeNumber(v, fallback = 0) {
   const n = Number(v);
   return isNaN(n) ? fallback : n;
 }
 
-async function getAIAnalysis(email, symbol, price, closes) {
+async function getAIAnalysis(email, symbol, position = null, closes = null) {
   try {
-    const data = await instance.getAnalysisData(symbol);
-    let priceData = closes && closes.length > 0 ? closes : data.closes;
+    // ─── Fetch full analysis with indicators ──────────────────────
+    const analysis = await instance.getFullAnalysis(symbol, 100);
+    const currentPrice = analysis.currentPrice;
 
-    if (!priceData || priceData.length < 14) {
-      return {
-        signal: 'HOLD',
-        confidence: 0,
-        reason: 'Insufficient market data (need ≥14 candles)',
-      };
-    }
+    // ─── Build prompt with indicators and position ──────────────────
+    let positionText = position ? `You currently hold a ${position.type} position opened at $${position.entry_price}.` : 'You have no open position.';
+    const prompt = `You are a professional crypto trader. Analyze the following market data and provide a decision.
 
-    const ind = instance.calculateIndicators(priceData);
-    if (!ind) {
-      return { signal: 'HOLD', confidence: 0, reason: 'Indicator calculation failed' };
-    }
+Symbol: ${analysis.symbol}
+Current Price: $${currentPrice}
+RSI(14): ${analysis.rsi}
+MACD: ${analysis.macd ? `${analysis.macd.macd.toFixed(2)} (signal: ${analysis.macd.signal.toFixed(2)}, histogram: ${analysis.macd.histogram.toFixed(2)})` : 'N/A'}
+SMA20: ${analysis.sma20.toFixed(2)}
+SMA50: ${analysis.sma50.toFixed(2)}
+EMA20: ${analysis.ema20.toFixed(2)}
+EMA50: ${analysis.ema50.toFixed(2)}
 
-    const rsi = safeNumber(ind.rsi);
-    const macd = safeNumber(ind.macd);
-    const ema20 = safeNumber(ind.ema20);
-    const ema50 = safeNumber(ind.ema50);
-    const ema200 = safeNumber(ind.ema200 || ema50);
-    const atr = safeNumber(ind.atr);
-    const bbUpper = safeNumber(ind.bbUpper);
-    const bbLower = safeNumber(ind.bbLower);
-    const currentPrice = price || data.price || ind.currentPrice || 0;
+Position: ${positionText}
 
-    if (!nvidiaClient) {
-      return { signal: 'HOLD', confidence: 0, reason: 'NVIDIA client not initialized' };
-    }
+Based on the indicators and your position, what should you do? Return ONLY valid JSON with keys: "signal" (BUY, SELL, or HOLD), "confidence" (0-100), "reason" (string).`;
 
-    // ─── Build prompt (same style as before, but we can keep it) ──
-    const prompt = `Analyze ${symbol} at $${currentPrice.toFixed(2)}.
-RSI: ${rsi.toFixed(2)}, MACD: ${macd.toFixed(4)}
-EMA20: ${ema20.toFixed(2)}, EMA50: ${ema50.toFixed(2)}, EMA200: ${ema200.toFixed(2)}
-ATR: ${atr.toFixed(4)}, BB Upper: ${bbUpper.toFixed(2)}, BB Lower: ${bbLower.toFixed(2)}
-Return JSON: {"signal":"BUY|SELL|HOLD","confidence":0,"reason":"..."}`;
+    console.log(`[AI] Sending prompt to ${MODEL}`);
 
-    console.log('[AI] Sending request to NVIDIA with model:', MODEL);
-
-    // ─── Exactly the same parameters as Python script ──────────────
-    const decision = await nvidiaClient.chat.completions.create({
-      model: MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: TEMPERATURE,
-      top_p: TOP_P,
-      max_tokens: MAX_TOKENS,
-      seed: SEED,
-      stream: false, // we don't stream for simplicity, but you can enable if needed
-    });
+    const decision = await callWithRetry(() =>
+      nvidiaClient.chat.completions.create({
+        model: MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.4,
+        max_tokens: 300,
+        stream: false,
+      })
+    );
 
     const content = decision.choices[0].message.content;
     const match = content.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON returned from NVIDIA');
+    if (!match) throw new Error('No JSON returned');
 
     const parsed = JSON.parse(match[0]);
     const signal = parsed.signal || 'HOLD';
     const confidence = Math.min(100, Math.max(0, Number(parsed.confidence) || 0));
-    const reason = parsed.reason || 'AI decision';
-
-    const finalSignal = confidence >= 75 ? signal : 'HOLD';
-    const finalReason = confidence < 75 ? `${reason} (confidence ${confidence}% < 75%)` : reason;
+    const reason = parsed.reason || 'No reason provided';
 
     return {
-      signal: finalSignal,
-      confidence: confidence,
-      trend: parsed.trend || 'Sideways',
-      market_regime: parsed.market_regime || 'Ranging',
-      entry_price: currentPrice,
-      stop_loss: 0,
-      take_profit: 0,
-      risk_reward: '1:1',
-      expected_move_percent: 0,
-      trade_duration: 'Intraday',
-      reason: finalReason,
-      pros: [],
-      cons: [],
-      indicator_scores: {},
-      data: { price: currentPrice, rsi, macd, ema20, ema50, ema200, atr },
+      signal,
+      confidence,
+      reason,
+      data: {
+        price: currentPrice,
+        rsi: analysis.rsi,
+        macd: analysis.macd,
+        ema20: analysis.ema20,
+        ema50: analysis.ema50,
+      },
     };
   } catch (error) {
     console.error('[AI] Error:', error.message);
-    // Try to extract more info from the error
-    let errorDetail = error.message;
-    if (error.response && error.response.data) {
-      try {
-        const body = await error.response.data.text();
-        errorDetail += ` - Response body: ${body}`;
-      } catch (e) {
-        // ignore
-      }
-    }
-    return {
-      signal: 'HOLD',
-      confidence: 0,
-      reason: `NVIDIA AI error: ${errorDetail}`,
-    };
+    // Fallback: HOLD with low confidence
+    return { signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message };
   }
 }
 
-// ─── Routes ──────────────────────────────────────────────────────────
+// ─── HTTP endpoints ──────────────────────────────────────────────────
 router.post('/analyze', async (req, res) => {
   const rawSymbol = req.body.symbol || req.body.market || 'BTCUSDT';
   const symbol = rawSymbol.replace(/\//g, '');
   const email = req.user?.email || req.body.email || 'demo@example.com';
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Request timeout')), 20000));
   try {
-    const result = await Promise.race([
-      getAIAnalysis(email, symbol, null, req.body.closes || null),
-      timeout,
-    ]);
+    const result = await getAIAnalysis(email, symbol, null);
     res.json(result);
   } catch (error) {
     console.error('[AI] Route error:', error.message);
-    res.status(500).json({ signal: 'HOLD', confidence: 0, reason: `Request error: ${error.message}` });
+    res.status(500).json({ signal: 'HOLD', confidence: 0, reason: 'Error: ' + error.message });
   }
 });
 
