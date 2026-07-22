@@ -184,3 +184,26 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
     </div>
   );
 }
+
+
+  useEffect(() => {
+    const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/ai/market-data?symbol=BTCUSDT`);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        if (data && typeof data.price === "number" && data.price > 0) {
+          setPrice(data.price);
+          setPriceHistory(prev => {
+            const newHistory = [...prev, data.price];
+            return newHistory.slice(-50);
+          });
+          setTickCount(prev => prev + 1);
+        }
+      } catch (e) {
+        console.error("[Polling] Error:", e);
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, []);
