@@ -1,0 +1,13 @@
+// Find the line "app.use('/api', authenticate);" and insert the market-data route before it.
+// We'll use sed to insert the route definition before that line.
+sed -i '/app\.use(\x27\/api\x27, authenticate);/i\
+app.get("/api/ai/market-data", async (req, res) => {\
+  let { symbol = "BTCUSDT" } = req.query;\
+  symbol = symbol.replace(/\\//g, "");\
+  try {\
+    const data = await instance.getAnalysisData(symbol);\
+    res.json(data);\
+  } catch (error) {\
+    res.status(500).json({ error: error.message });\
+  }\
+});' backend/server.js
