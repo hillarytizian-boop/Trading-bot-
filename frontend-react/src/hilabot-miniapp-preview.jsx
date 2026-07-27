@@ -1,16 +1,19 @@
+import { connectWebSocket, closeWebSocket } from "./websocket-patch";
 const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
 
-import React, { useState, useEffect, useRef, lazy, Suspense } from "react";
-
+// ─── Lazy load heavy components ──────────────────────────────────
 const Chart = lazy(() => import("./Chart"));
 const Dashboard = lazy(() => import("./Dashboard"));
 const Backtest = lazy(() => import("./Backtest"));
 
+// ─── Constants ────────────────────────────────────────────────────
 const TG_BLUE = "#2AABEE", DARK_BG = "#0E1621", DARK_PANEL = "#17212B";
 const DARK_BORDER = "rgba(255,255,255,0.07)", TEXT = "#E7ECF0", MUTED = "#6C7883";
 const GREEN = "#4FCE5D", RED = "#FF5E5E", GOLD = "#F0B429", sysFont = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 const CURRENT_USER = { name: "Demo Trader", email: "demo@example.com", role: "user" };
 
+// ─── Helper Components ────────────────────────────────────────────
 function pill(c) { return { background: `${c}1f`, color: c, border: `1px solid ${c}55`, borderRadius: 20, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }; }
 function Dot({ d }) { return <span style={{ width: 6, height: 6, borderRadius: "50%", background: MUTED, display: "inline-block", animation: "tgBounce 1.2s infinite", animationDelay: `${d}s` }} />; }
 function SignalChip({ signal, confidence, risk }) {
@@ -22,6 +25,7 @@ function TgSwitch({ checked, onChange }) { return ( <div onClick={() => onChange
 function TgListRow({ icon, label, sub, right, onClick, last }) { return ( <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 13, padding: "12px 16px", cursor: onClick ? "pointer" : "default", borderBottom: last ? "none" : `1px solid ${DARK_BORDER}` }}> <div style={{ width: 32, height: 32, borderRadius: 9, background: "rgba(42,171,238,0.12)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{icon}</div> <div style={{ flex: 1, minWidth: 0 }}> <p style={{ fontSize: 14, lineHeight: 1.2 }}>{label}</p> {sub && <p style={{ fontSize: 11.5, color: MUTED, marginTop: 1 }}>{sub}</p>} </div> {right} </div> ); }
 function Chevron() { return <span style={{ color: MUTED, fontSize: 16 }}>›</span>; }
 
+// ─── AppHeader ────────────────────────────────────────────────────
 function AppHeader({ onOpenSettings, binanceConnected }) {
   return (
     <div style={{ height: 56, background: DARK_PANEL, borderBottom: `1px solid ${DARK_BORDER}`, display: "flex", alignItems: "center", padding: "0 14px", flexShrink: 0, position: "relative" }}>
@@ -37,6 +41,7 @@ function AppHeader({ onOpenSettings, binanceConnected }) {
   );
 }
 
+// ─── SettingsDrawer ──────────────────────────────────────────────
 function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selectedSymbol, onSymbolChange, paperMode, onPaperToggle }) {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
@@ -53,25 +58,15 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const displayBalance = binance?.balance || '0.00';
 
   const saveBinanceKeys = async () => {
-    console.log("[Frontend] Connecting Binance...");
-    console.log("[Frontend] Email:", localEmail);
-    console.log("[Frontend] API Key length:", apiKey ? apiKey.length : 0);
-    console.log("[Frontend] Secret Key length:", apiSecret ? apiSecret.length : 0);
-    const trimmedApi = apiKey ? apiKey.trim() : "";
-    const trimmedSecret = apiSecret ? apiSecret.trim() : "";
-    if (!trimmedApi || !trimmedSecret) {
-      alert("API key and Secret are required.");
-      return;
-    }
     if (!localEmail || !apiKey || !apiSecret) { alert('Please fill in email, API Key, and Secret.'); return; }
     setStatus('connecting');
     try {
-      const res = await fetch(`${API_BASE_URL}/api/binance/connect`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail.trim(), apiKey: trimmedApi, secretKey: trimmedSecret }) });
+      const res = await fetch(API_BASE_URL + "/api/binance/connect", { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: localEmail, apiKey, secretKey: apiSecret }) });
       const data = await res.json();
       if (res.ok) {
         setStatus('connected');
         onBinanceConnect(localEmail);
-        const balRes = await fetch(`${API_BASE_URL}/api/binance/balance?email=${encodeURIComponent(localEmail)}`);
+        const balRes = await fetch("/api/binance/balance?email=" + encodeURIComponent(localEmail));
         const balData = await balRes.json();
         if (balRes.ok) setBalance(balData.balance || '0.00');
       } else { setStatus('error'); alert('Failed to connect: ' + data.error); }
@@ -79,79 +74,32 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   };
 
   useEffect(() => {
-    const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(API_BASE_URL + "/api/ai/market-data?symbol=BTCUSDT");
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const data = await res.json();
-        if (data && typeof data.price === "number" && data.price > 0) {
-          setPrice(data.price);
-          setPriceHistory(prev => {
-            const newHistory = [...prev, data.price];
-            return newHistory.slice(-50);
-          });
-          setTickCount(prev => prev + 1);
-        }
-      } catch (e) {
-        console.error("[Polling] Error:", e);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // ─── Auto-analysis every 5 seconds ────────────────────────────
-  useEffect(() => {
-    const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/ai/market-data?symbol=BTCUSDT`);
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const data = await res.json();
-        if (data && typeof data.price === "number" && data.price > 0) {
-          setPrice(data.price);
-          setPriceHistory(prev => {
-            const newHistory = [...prev, data.price];
-            return newHistory.slice(-50);
-          });
-          setTickCount(prev => prev + 1);
-        }
-      } catch (e) {
-        console.error("[Polling] Error:", e);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
+    const handlePrice = (price, candles) => {
+      setPrice(price);
+      setPriceHistory(prev => (candles && candles.length > 0 ? candles : [...prev, price].slice(-50)));
+      setTickCount(prev => prev + 1);
+    };
+    connectWebSocket(handlePrice);
+    return () => closeWebSocket();
   }, []);
 
   // ─── Scroll ─────────────────────────────────────────────────────
   useEffect(() => {
-    const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/ai/market-data?symbol=BTCUSDT`);
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const data = await res.json();
-        if (data && typeof data.price === "number" && data.price > 0) {
-          setPrice(data.price);
-          setPriceHistory(prev => {
-            const newHistory = [...prev, data.price];
-            return newHistory.slice(-50);
-          });
-          setTickCount(prev => prev + 1);
-        }
-      } catch (e) {
-        console.error("[Polling] Error:", e);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
+    const handlePrice = (price, candles) => {
+      setPrice(price);
+      setPriceHistory(prev => (candles && candles.length > 0 ? candles : [...prev, price].slice(-50)));
+      setTickCount(prev => prev + 1);
+    };
+    connectWebSocket(handlePrice);
+    return () => closeWebSocket();
   }, []);
 
   const handleBinanceConnect = async (email) => {
-    const statusRes = await fetch(`${API_BASE_URL}/api/binance/status?email=${encodeURIComponent(email)}`);
+    const statusRes = await fetch("/api/binance/status?email=" + encodeURIComponent(encodeURIComponent(email)));
     const statusData = await statusRes.json();
     if (statusData.connected) {
       setBinance(prev => ({ ...prev, connected: true }));
-      const balRes = await fetch(`${API_BASE_URL}/api/binance/balance?email=${encodeURIComponent(email)}`);
+      const balRes = await fetch("/api/binance/balance?email=" + encodeURIComponent(encodeURIComponent(email)));
       const balData = await balRes.json();
       if (balData.balance !== undefined) setBinance(prev => ({ ...prev, balance: balData.balance }));
     }
@@ -160,7 +108,7 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
   const handlePaperToggle = async (value) => {
     setPaperMode(value);
     try {
-      await fetch(`${API_BASE_URL}/api/user/settings`, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }) });
+      await fetch(API_BASE_URL + "/api/user/settings", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: CURRENT_USER.email, settings: { paperMode: value } }) });
     } catch (err) { console.error("Failed to save paper mode", err); }
   };
 
@@ -186,24 +134,4 @@ function SettingsDrawer({ open, onClose, binance, onBinanceConnect, email, selec
 }
 
 
-  useEffect(() => {
-    const API_BASE_URL = "https://trading-bot-lsnu.onrender.com";
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/ai/market-data?symbol=BTCUSDT`);
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const data = await res.json();
-        if (data && typeof data.price === "number" && data.price > 0) {
-          setPrice(data.price);
-          setPriceHistory(prev => {
-            const newHistory = [...prev, data.price];
-            return newHistory.slice(-50);
-          });
-          setTickCount(prev => prev + 1);
-        }
-      } catch (e) {
-        console.error("[Polling] Error:", e);
-      }
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
+export default HilaBotMiniApp;
